@@ -55,11 +55,13 @@ wind-tunnel/
 
 El fluido se modela sobre una grilla 2D (`FluidGrid` en `fluid.js`) siguiendo el enfoque de *Stable Fluids* (Jos Stam): en cada paso se advecta la velocidad, se difunde según la viscosidad y se proyecta el campo para que sea libre de divergencia resolviendo una ecuación de Poisson para la presión. El objeto (perfil o cilindro) se rasteriza como máscara de obstáculo dentro de esa misma grilla.
 
+Para que se formen y sostengan los vórtices (que la advección semi-lagrangiana normalmente disipa) se agregan tres cosas: **confinamiento de vorticidad** (Fedkiw et al. 2001), que reinyecta el remolino de pequeña escala perdido por la difusión numérica; **advección MacCormack del tinte**, un esquema de segundo orden mucho menos difusivo que hace que el humo enrolle los vórtices en vez de emborronarlos; y una pequeña perturbación en la entrada que rompe la simetría para que el desprendimiento (calle de von Kármán) arranque. El resultado: estela turbulenta detrás del cilindro y separación de capa límite sobre el perfil en pérdida. A mayor velocidad, mayor vorticidad y flujo más turbulento; a baja velocidad, más laminar.
+
 Los modos de campo (humo, contorno, presión) se renderizan escribiendo un píxel por celda en un canvas offscreen de la resolución de la grilla, que luego se escala al canvas visible en una sola operación (el suavizado bilineal del escalado interpola entre celdas). Las partículas trazadoras se advectan muestreando el campo de velocidad con interpolación bilineal y dejan estelas sobre un buffer persistente con desvanecimiento gradual.
 
-Los perfiles NACA se generan a partir de las fórmulas estándar de distribución de espesor y línea de camber para el NACA de 4 dígitos.
+Los perfiles NACA se generan a partir de las fórmulas estándar de distribución de espesor y línea de camber para el NACA de 4 dígitos. La sustentación y la resistencia se obtienen integrando la presión alrededor de la superficie del objeto; sobre eso, un modelo de separación de capa límite dependiente del ángulo hace caer la sustentación y disparar la resistencia de forma más allá del ángulo crítico, para reproducir la entrada en pérdida (stall) — que a esta resolución no emerge sola de forma limpia.
 
-**Nota física**: a la resolución de grilla usada (~120×60) la difusión numérica domina sobre la viscosidad real de fluidos poco viscosos — agua y aire se comportan de forma casi idéntica (ambos son efectivamente no viscosos a esta escala, como refleja su Reynolds altísimo). Los fluidos muy viscosos (glicerina, miel) sí muestran diferencias visibles.
+**Nota física**: es una simulación cualitativa en tiempo real, no un solver de CFD. A la resolución de grilla usada (~120×60) la difusión numérica domina sobre la viscosidad real de fluidos poco viscosos — agua y aire se comportan de forma casi idéntica (ambos efectivamente no viscosos a esta escala, como refleja su Reynolds altísimo); solo los fluidos muy viscosos (glicerina, miel) muestran diferencias claras. Los vórtices y el stall son fenomenológicamente correctos pero no cuantitativos.
 
 ## Tecnología
 

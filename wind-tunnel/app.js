@@ -516,8 +516,38 @@ function computeRawForces() {
     return { lift: lift * 100, drag: drag * 100 };
 }
 
-function calculateForces() {
+// Boundary-layer separation / stall model.
+//
+// The pressure integration alone keeps building lift with angle: at this grid
+// resolution the flow never cleanly separates, so there is no stall. Real wings
+// stall because the boundary layer on the suction side detaches past a critical
+// angle, collapsing the lift and spiking the (form) drag. We model that with a
+// smooth separation fraction driven by angle of attack, applied on top of the
+// physically-integrated pressure force.
+const STALL_ONSET_DEG = 12;
+const STALL_FULL_DEG = 22;
+
+function separationFraction(aoaDeg) {
+    const a = Math.abs(aoaDeg);
+    if (a <= STALL_ONSET_DEG) return 0;
+    let t = (a - STALL_ONSET_DEG) / (STALL_FULL_DEG - STALL_ONSET_DEG);
+    if (t > 1) t = 1;
+    return t * t * (3 - 2 * t); // smoothstep
+}
+
+function aeroForces() {
     const raw = computeRawForces();
+    if (config.objectType !== 'airfoil') return raw;
+
+    const sep = separationFraction(config.aoa);
+    return {
+        lift: raw.lift * (1 - 0.75 * sep),                 // lift collapses at stall
+        drag: raw.drag + sep * Math.abs(raw.lift) * 0.6    // form drag jumps at stall
+    };
+}
+
+function calculateForces() {
+    const raw = aeroForces();
 
     // Exponential smoothing of the readout
     const alpha = 0.1;
@@ -976,6 +1006,11 @@ async function runSweep() {
     ui.sweepStatus.classList.remove('hidden');
 
     const prevAoa = config.aoa;
+    const prevConfinement = fluid.confinement;
+    // A polar is a quasi-steady measurement: damp the shedding so the averaged
+    // forces are clean (the stall itself comes from the separation model, not
+    // from the turbulent unsteadiness).
+    fluid.confinement = 1.5;
     const uSpeed = Math.max(0.2, (config.speed / 100) * 2.0); // guarantee some flow
     const results = [];
 
@@ -991,7 +1026,7 @@ async function runSweep() {
         let liftSum = 0, dragSum = 0;
         for (let k = 0; k < SWEEP_AVG; k++) {
             fluid.step(config.dt, config.visc, 0, uSpeed);
-            const f = computeRawForces();
+            const f = aeroForces();
             liftSum += f.lift;
             dragSum += f.drag;
         }
@@ -1000,7 +1035,8 @@ async function runSweep() {
         await nextFrame(); // paint progress + current flow between angles
     }
 
-    // Restore the pre-sweep angle
+    // Restore the pre-sweep angle and live turbulence level
+    fluid.confinement = prevConfinement;
     config.aoa = prevAoa;
     ui.aoaSlider.value = prevAoa;
     ui.aoaVal.textContent = `${prevAoa}°`;
