@@ -39,8 +39,24 @@ const ui = {
     btnPause: document.getElementById('btn-pause'),
     statusBadge: document.getElementById('sim-status'),
     valLift: document.getElementById('val-lift'),
-    valDrag: document.getElementById('val-drag')
+    valDrag: document.getElementById('val-drag'),
+    valRe: document.getElementById('val-re')
 };
+
+// Reynolds number for a reference chord of 1 m, with the speed slider read
+// as airspeed in m/s and the select as kinematic viscosity in m²/s.
+const REFERENCE_CHORD_M = 1;
+
+function formatReynolds(re) {
+    if (re >= 1e6) return (re / 1e6).toFixed(1) + 'M';
+    if (re >= 1e3) return (re / 1e3).toFixed(1) + 'k';
+    return Math.round(re).toString();
+}
+
+function updateReynolds() {
+    const re = config.speed * REFERENCE_CHORD_M / config.visc;
+    ui.valRe.textContent = formatReynolds(re);
+}
 
 function init() {
     airfoilGen = new AirfoilGenerator();
@@ -50,6 +66,7 @@ function init() {
     fluid = new FluidGrid(config.nx, config.ny);
     setupEvents();
     updateObstacle();
+    updateReynolds();
 
     requestAnimationFrame(loop);
 }
@@ -119,10 +136,12 @@ function setupEvents() {
     ui.speedSlider.addEventListener('input', (e) => {
         config.speed = parseInt(e.target.value);
         ui.speedVal.textContent = config.speed;
+        updateReynolds();
     });
 
     ui.viscSelect.addEventListener('change', (e) => {
         config.visc = parseFloat(e.target.value);
+        updateReynolds();
     });
 
     ui.vizRadios.forEach(radio => {

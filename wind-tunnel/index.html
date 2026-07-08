@@ -28,6 +28,8 @@
                     <div class="data-readout">
                         <div><span class="label">Lift (approx)</span><span class="value" id="val-lift">0.00</span></div>
                         <div><span class="label">Drag (approx)</span><span class="value" id="val-drag">0.00</span></div>
+                        <div title="Re = U·c/ν — reference chord c = 1 m"><span class="label">Reynolds</span><span
+                                class="value" id="val-re">0</span></div>
                     </div>
                 </div>
             </div>
@@ -71,7 +73,8 @@
                 <div class="control-group">
                     <h2>Fluid Dynamics</h2>
                     <div class="control-row">
-                        <label for="speed-slider">Flow Speed: <span id="speed-val" class="highlight">20</span></label>
+                        <label for="speed-slider">Flow Speed: <span class="highlight"><span id="speed-val">20</span>
+                                m/s</span></label>
                         <input type="range" id="speed-slider" min="0" max="100" value="20">
                     </div>
                     <div class="control-row">
