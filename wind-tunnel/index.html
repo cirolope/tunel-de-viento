@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aerodynamic Wind Tunnel Simulator</title>
+    <link rel="stylesheet" href="styles.css">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=JetBrains+Mono:wght@400&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <div class="app-container">
+        <header class="header">
+            <h1>Wind Tunnel Simulator</h1>
+            <div class="status-badge" id="sim-status">
+                <span class="dot"></span>
+                Running
+            </div>
+        </header>
+
+        <main class="main-content">
+            <div class="canvas-wrapper">
+                <canvas id="sim-canvas"></canvas>
+                <div class="canvas-overlay">
+                    <div class="data-readout">
+                        <div><span class="label">Lift (approx)</span><span class="value" id="val-lift">0.00</span></div>
+                        <div><span class="label">Drag (approx)</span><span class="value" id="val-drag">0.00</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <aside class="controls-panel">
+                <div class="control-group">
+                    <h2>Object Properties</h2>
+                    <div class="control-row custom-radio">
+                        <label class="radio-label">
+                            <input type="radio" name="object-type" value="airfoil" checked>
+                            <span class="radio-custom">Airfoil</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="object-type" value="cylinder">
+                            <span class="radio-custom">Cylinder</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="control-group" id="group-airfoil">
+                    <h2>Airfoil Properties</h2>
+                    <div class="control-row">
+                        <label for="naca-input">NACA Profile (4-digit)</label>
+                        <input type="text" id="naca-input" value="2412" maxlength="4" pattern="[0-9]{4}">
+                    </div>
+                    <div class="control-row">
+                        <label for="aoa-slider">Angle of Attack: <span id="aoa-val" class="highlight">0°</span></label>
+                        <input type="range" id="aoa-slider" min="-20" max="20" value="0" step="1">
+                    </div>
+                </div>
+
+                <div class="control-group hidden" id="group-cylinder">
+                    <h2>Cylinder Properties</h2>
+                    <div class="control-row">
+                        <label for="rotation-slider">Rotation Speed: <span id="rotation-val"
+                                class="highlight">0</span></label>
+                        <input type="range" id="rotation-slider" min="-100" max="100" value="0" step="1">
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <h2>Fluid Dynamics</h2>
+                    <div class="control-row">
+                        <label for="speed-slider">Flow Speed: <span id="speed-val" class="highlight">20</span></label>
+                        <input type="range" id="speed-slider" min="0" max="100" value="20">
+                    </div>
+                    <div class="control-row">
+                        <label for="viscosity-select">Fluid Viscosity:</label>
+                        <select id="viscosity-select" class="custom-select">
+                            <option value="0.0000010">Water (20°C)</option>
+                            <option value="0.0000150" selected>Air (20°C)</option>
+                            <option value="0.0001000">Motor Oil</option>
+                            <option value="0.0010000">Glycerin</option>
+                            <option value="0.0100000">Honey</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <h2>Visualization</h2>
+                    <div class="control-row custom-radio">
+                        <label class="radio-label">
+                            <input type="radio" name="viz-mode" value="dye" checked>
+                            <span class="radio-custom">Smoke / Dye</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="viz-mode" value="velocity">
+                            <span class="radio-custom">Velocity Field</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="viz-mode" value="velocity-contour">
+                            <span class="radio-custom">Velocity Contour</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="viz-mode" value="pressure">
+                            <span class="radio-custom">Pressure Map</span>
+                        </label>
+                    </div>
+                    <div class="control-row action-row">
+                        <button id="btn-reset" class="btn secondary">Reset Flow</button>
+                        <button id="btn-pause" class="btn primary">Pause</button>
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <script src="airfoil.js"></script>
+    <script src="fluid.js"></script>
+    <script src="app.js"></script>
+</body>
+
+</html>
