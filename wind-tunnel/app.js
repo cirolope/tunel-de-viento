@@ -67,6 +67,7 @@ function init() {
     setupEvents();
     updateObstacle();
     updateReynolds();
+    resetParticles();
 
     requestAnimationFrame(loop);
 }
@@ -146,13 +147,17 @@ function setupEvents() {
 
     ui.vizRadios.forEach(radio => {
         radio.addEventListener('change', (e) => {
-            if (e.target.checked) config.vizMode = e.target.value;
+            if (e.target.checked) {
+                config.vizMode = e.target.value;
+                if (config.vizMode === 'particles') resetParticles();
+            }
         });
     });
 
     ui.btnReset.addEventListener('click', () => {
         fluid = new FluidGrid(config.nx, config.ny);
         updateObstacle();
+        resetParticles();
     });
 
     ui.btnPause.addEventListener('click', () => {
@@ -329,6 +334,7 @@ function loop(now) {
             // Map UI speed to fluid units
             let uSpeed = (config.speed / 100) * 2.0;
             fluid.step(config.dt, config.visc, 0.0, uSpeed);
+            if (config.vizMode === 'particles') updateParticles(config.dt);
             timeAccumulator -= SIM_STEP;
             steps++;
         }
@@ -340,6 +346,114 @@ function loop(now) {
 
     draw();
     requestAnimationFrame(loop);
+}
+
+/* ---------------------------------------------------------------------------
+ * Tracer particles
+ *
+ * Massless particles advected by the velocity field, drawn with fading
+ * trails on a persistent overlay canvas — like smoke filaments in a real
+ * wind tunnel. Positions are in grid coordinates.
+ * ------------------------------------------------------------------------- */
+
+const NUM_PARTICLES = 700;
+const particleX = new Float32Array(NUM_PARTICLES);
+const particleY = new Float32Array(NUM_PARTICLES);
+// Previous position, so each frame draws a continuous segment (filament)
+const particlePX = new Float32Array(NUM_PARTICLES);
+const particlePY = new Float32Array(NUM_PARTICLES);
+
+const trailCanvas = document.createElement('canvas');
+const trailCtx = trailCanvas.getContext('2d');
+
+function seedParticle(i, anywhere) {
+    particleX[i] = anywhere ? Math.random() * (config.nx - 2) + 1 : 1 + Math.random() * 2;
+    particleY[i] = 1 + Math.random() * (config.ny - 2);
+    particlePX[i] = particleX[i];
+    particlePY[i] = particleY[i];
+}
+
+function resetParticles() {
+    for (let i = 0; i < NUM_PARTICLES; i++) seedParticle(i, true);
+    clearTrails();
+}
+
+function clearTrails() {
+    trailCtx.setTransform(1, 0, 0, 1, 0, 0);
+    trailCtx.fillStyle = '#0a0a0c';
+    trailCtx.fillRect(0, 0, trailCanvas.width, trailCanvas.height);
+}
+
+// Bilinear sample of the velocity field at fractional grid coords
+function sampleVelocity(x, y) {
+    const i0 = Math.floor(x);
+    const j0 = Math.floor(y);
+    const s1 = x - i0, s0 = 1 - s1;
+    const t1 = y - j0, t0 = 1 - t1;
+
+    const a = fluid.IX(i0, j0), b = fluid.IX(i0 + 1, j0);
+    const c = fluid.IX(i0, j0 + 1), d = fluid.IX(i0 + 1, j0 + 1);
+
+    return {
+        u: s0 * (t0 * fluid.u[a] + t1 * fluid.u[c]) + s1 * (t0 * fluid.u[b] + t1 * fluid.u[d]),
+        v: s0 * (t0 * fluid.v[a] + t1 * fluid.v[c]) + s1 * (t0 * fluid.v[b] + t1 * fluid.v[d])
+    };
+}
+
+function updateParticles(dt) {
+    // Same velocity-to-cells scaling used by the advection step
+    const dt0x = dt * (config.nx - 2);
+    const dt0y = dt * (config.ny - 2);
+
+    for (let i = 0; i < NUM_PARTICLES; i++) {
+        particlePX[i] = particleX[i];
+        particlePY[i] = particleY[i];
+
+        const vel = sampleVelocity(particleX[i], particleY[i]);
+        particleX[i] += vel.u * dt0x;
+        particleY[i] += vel.v * dt0y;
+
+        const gx = Math.round(particleX[i]);
+        const gy = Math.round(particleY[i]);
+        const out = particleX[i] >= config.nx - 1 || particleX[i] < 0 ||
+            particleY[i] <= 0 || particleY[i] >= config.ny - 1;
+        if (out || fluid.s[fluid.IX(gx, gy)] === 1) {
+            seedParticle(i, false);
+        }
+    }
+}
+
+function drawParticles(cs) {
+    const dpr = window.devicePixelRatio || 1;
+
+    if (trailCanvas.width !== canvas.width || trailCanvas.height !== canvas.height) {
+        trailCanvas.width = canvas.width;
+        trailCanvas.height = canvas.height;
+        clearTrails();
+    }
+
+    if (config.isRunning) {
+        trailCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        // Fade previous frame slightly to leave trails
+        trailCtx.fillStyle = 'rgba(10, 10, 12, 0.14)';
+        trailCtx.fillRect(0, 0, trailCanvas.width, trailCanvas.height);
+
+        // One stroke with all segments: previous -> current position
+        trailCtx.strokeStyle = 'rgba(170, 255, 240, 0.55)';
+        trailCtx.lineWidth = 1;
+        trailCtx.beginPath();
+        for (let i = 0; i < NUM_PARTICLES; i++) {
+            trailCtx.moveTo(particlePX[i] * cs, particlePY[i] * cs);
+            trailCtx.lineTo(particleX[i] * cs + 0.3, particleY[i] * cs + 0.3);
+        }
+        trailCtx.stroke();
+    }
+
+    // Blit the trail buffer 1:1 in device pixels
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(trailCanvas, 0, 0);
+    ctx.restore();
 }
 
 /* ---------------------------------------------------------------------------
@@ -577,6 +691,8 @@ function draw() {
 
     if (config.vizMode === 'velocity') {
         drawVelocityVectors(cs);
+    } else if (config.vizMode === 'particles') {
+        drawParticles(cs);
     } else {
         ensureFieldBuffer();
         const data = fieldImage.data;
