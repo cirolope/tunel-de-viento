@@ -29,6 +29,7 @@ const ui = {
     rotationSlider: document.getElementById('rotation-slider'),
     rotationVal: document.getElementById('rotation-val'),
     nacaInput: document.getElementById('naca-input'),
+    nacaError: document.getElementById('naca-error'),
     aoaSlider: document.getElementById('aoa-slider'),
     aoaVal: document.getElementById('aoa-val'),
     speedSlider: document.getElementById('speed-slider'),
@@ -120,12 +121,28 @@ function setupEvents() {
         if (config.objectType === 'cylinder') updateObstacle();
     });
 
-    ui.nacaInput.addEventListener('change', (e) => {
-        let val = e.target.value;
-        if (val.length === 4) {
-            config.naca = val;
-            updateObstacle();
+    const setNacaValidity = (valid) => {
+        ui.nacaInput.classList.toggle('invalid', !valid);
+        ui.nacaError.classList.toggle('hidden', valid);
+    };
+
+    ui.nacaInput.addEventListener('input', (e) => {
+        const val = e.target.value;
+        if (/^\d{4}$/.test(val)) {
+            setNacaValidity(true);
+            if (val !== config.naca) {
+                config.naca = val;
+                updateObstacle();
+            }
+        } else {
+            // While typing, only flag clearly wrong input (non-digits);
+            // an incomplete number is flagged on blur
+            setNacaValidity(!/\D/.test(val));
         }
+    });
+
+    ui.nacaInput.addEventListener('blur', (e) => {
+        setNacaValidity(/^\d{4}$/.test(e.target.value));
     });
 
     ui.aoaSlider.addEventListener('input', (e) => {

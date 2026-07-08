@@ -53,7 +53,9 @@
                     <h2>Airfoil Properties</h2>
                     <div class="control-row">
                         <label for="naca-input">NACA Profile (4-digit)</label>
-                        <input type="text" id="naca-input" value="2412" maxlength="4" pattern="[0-9]{4}">
+                        <input type="text" id="naca-input" value="2412" maxlength="4" pattern="[0-9]{4}"
+                            inputmode="numeric" aria-describedby="naca-error">
+                        <span class="input-error hidden" id="naca-error" role="alert">Enter 4 digits, e.g. 2412</span>
                     </div>
                     <div class="control-row">
                         <label for="aoa-slider">Angle of Attack: <span id="aoa-val" class="highlight">0°</span></label>

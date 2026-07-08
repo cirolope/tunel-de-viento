@@ -229,6 +229,19 @@ input[type="text"]:focus {
     box-shadow: 0 0 10px var(--accent-glow);
 }
 
+input[type="text"].invalid,
+input[type="text"].invalid:focus {
+    border-color: var(--danger);
+    box-shadow: 0 0 10px rgba(255, 74, 74, 0.3);
+}
+
+.input-error {
+    display: block;
+    color: var(--danger);
+    font-size: 0.75rem;
+    margin-top: 0.4rem;
+}
+
 input[type="range"] {
     -webkit-appearance: none;
     width: 100%;
