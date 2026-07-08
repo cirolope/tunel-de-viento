@@ -256,6 +256,33 @@ input[type="range"]::-webkit-slider-thumb:hover {
     box-shadow: 0 0 10px var(--accent-glow);
 }
 
+input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--text-primary);
+    cursor: pointer;
+    border: 2px solid var(--bg-surface);
+    box-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+    transition: var(--transition);
+}
+
+input[type="range"]::-moz-range-thumb:hover {
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent-glow);
+}
+
+input[type="range"]:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.btn:focus-visible,
+.custom-select:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 /* Custom Radio Buttons */
 .custom-radio {
     display: flex;
@@ -264,6 +291,7 @@ input[type="range"]::-webkit-slider-thumb:hover {
 }
 
 .radio-label {
+    position: relative;
     display: flex;
     align-items: center;
     cursor: pointer;
@@ -277,8 +305,19 @@ input[type="range"]::-webkit-slider-thumb:hover {
     background: var(--bg-surface-elevated);
 }
 
+/* Visually hidden but still focusable and operable with the keyboard
+   (display:none would remove the radios from tab/arrow-key navigation) */
 .radio-label input {
-    display: none;
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+}
+
+.radio-label input:focus-visible+.radio-custom::before {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .radio-custom {
