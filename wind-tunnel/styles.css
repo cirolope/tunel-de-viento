@@ -402,6 +402,35 @@ input[type="range"]:focus-visible {
     display: none !important;
 }
 
+/* Narrow screens: stack the controls panel below the canvas */
+@media (max-width: 900px) {
+    body {
+        overflow-y: auto;
+        height: auto;
+    }
+
+    .app-container {
+        height: auto;
+        min-height: 100vh;
+    }
+
+    .main-content {
+        flex-direction: column;
+    }
+
+    .canvas-wrapper {
+        flex: none;
+        height: 55vh;
+        min-height: 320px;
+    }
+
+    .controls-panel {
+        width: 100%;
+        flex: none;
+        overflow-y: visible;
+    }
+}
+
 /* Select boxes */
 .custom-select {
     width: 100%;
