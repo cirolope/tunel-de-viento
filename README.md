@@ -7,7 +7,9 @@ Corre 100% en el cliente, sin backend ni build step: HTML, CSS y JavaScript puro
 ## Características
 
 - **Dos tipos de objeto**: perfil alar NACA de 4 dígitos (configurable, ej. `2412`) o cilindro rotante (efecto Magnus).
+- **Objeto arrastrable**: se puede reposicionar el perfil o cilindro dentro del túnel arrastrándolo con el mouse (o el dedo en pantallas táctiles).
 - **Ángulo de ataque** ajustable para el perfil alar (-20° a +20°).
+- **Barrido de ángulo de ataque**: un botón recorre automáticamente el rango de ángulos, deja asentar el flujo en cada uno y grafica las curvas de sustentación y resistencia vs. ángulo, marcando el punto de entrada en pérdida (stall) si aparece.
 - **Parámetros del fluido**: velocidad del flujo (en m/s) y viscosidad cinemática, con presets (agua, aire, aceite de motor, glicerina, miel).
 - **Número de Reynolds en vivo**, calculado como Re = U·c/ν con cuerda de referencia de 1 m.
 - **5 modos de visualización**: humo/tinta, partículas trazadoras con estelas (como los hilos de humo de un túnel real), campo de velocidad (vectores), contorno de velocidad (mapa de calor) y mapa de presión.

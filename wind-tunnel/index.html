@@ -32,6 +32,21 @@
                                 class="value" id="val-re">0</span></div>
                     </div>
                 </div>
+
+                <div class="chart-overlay hidden" id="chart-overlay" role="dialog" aria-label="Lift and drag versus angle of attack">
+                    <div class="chart-header">
+                        <h3>Lift &amp; Drag vs Angle of Attack</h3>
+                        <button class="chart-close" id="chart-close" aria-label="Close chart">×</button>
+                    </div>
+                    <canvas id="lift-chart" width="360" height="240"></canvas>
+                    <div class="chart-legend">
+                        <span><i class="swatch swatch-lift"></i>Lift</span>
+                        <span><i class="swatch swatch-drag"></i>Drag</span>
+                        <span class="chart-note" id="chart-note"></span>
+                    </div>
+                </div>
+
+                <div class="sweep-status hidden" id="sweep-status" role="status" aria-live="polite"></div>
             </div>
 
             <aside class="controls-panel">
@@ -60,6 +75,9 @@
                     <div class="control-row">
                         <label for="aoa-slider">Angle of Attack: <span id="aoa-val" class="highlight">0°</span></label>
                         <input type="range" id="aoa-slider" min="-20" max="20" value="0" step="1">
+                    </div>
+                    <div class="control-row">
+                        <button id="btn-sweep" class="btn secondary">Sweep AoA ▸ Lift curve</button>
                     </div>
                 </div>
 

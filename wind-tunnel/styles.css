@@ -156,6 +156,106 @@ canvas {
     font-weight: 600;
 }
 
+/* Lift-curve chart overlay */
+.chart-overlay {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    width: 380px;
+    max-width: calc(100% - 2rem);
+    background: rgba(16, 17, 22, 0.92);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    padding: 1rem;
+    z-index: 5;
+}
+
+.chart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.chart-header h3 {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.chart-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.25rem;
+    border-radius: var(--radius-sm);
+    transition: var(--transition);
+}
+
+.chart-close:hover {
+    color: var(--text-primary);
+    background: var(--bg-surface-elevated);
+}
+
+#lift-chart {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+
+.chart-legend {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    flex-wrap: wrap;
+}
+
+.chart-legend .swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    margin-right: 0.4rem;
+    vertical-align: middle;
+}
+
+.swatch-lift {
+    background: #3987e5;
+}
+
+.swatch-drag {
+    background: #d95926;
+}
+
+.chart-note {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+}
+
+.sweep-status {
+    position: absolute;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(16, 17, 22, 0.92);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border-subtle);
+    border-radius: 20px;
+    padding: 0.5rem 1.25rem;
+    font-size: 0.85rem;
+    color: var(--accent);
+    font-family: 'JetBrains Mono', monospace;
+    z-index: 5;
+}
+
 /* Controls Panel */
 .controls-panel {
     width: 320px;

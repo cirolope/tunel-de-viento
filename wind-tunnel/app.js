@@ -44,10 +44,16 @@ const ui = {
     vizRadios: document.getElementsByName('viz-mode'),
     btnReset: document.getElementById('btn-reset'),
     btnPause: document.getElementById('btn-pause'),
+    btnSweep: document.getElementById('btn-sweep'),
     statusBadge: document.getElementById('sim-status'),
     valLift: document.getElementById('val-lift'),
     valDrag: document.getElementById('val-drag'),
-    valRe: document.getElementById('val-re')
+    valRe: document.getElementById('val-re'),
+    chartOverlay: document.getElementById('chart-overlay'),
+    chartClose: document.getElementById('chart-close'),
+    chartCanvas: document.getElementById('lift-chart'),
+    chartNote: document.getElementById('chart-note'),
+    sweepStatus: document.getElementById('sweep-status')
 };
 
 // Reynolds number for a reference chord of 1 m, with the speed slider read
@@ -285,6 +291,11 @@ function setupEvents() {
         ui.statusBadge.innerHTML = config.isRunning ? '<span class="dot"></span> Running' : '<span class="dot" style="background:#ff4a4a; animation:none"></span> Paused';
     });
 
+    ui.btnSweep.addEventListener('click', runSweep);
+    ui.chartClose.addEventListener('click', () => ui.chartOverlay.classList.add('hidden'));
+    ui.chartCanvas.addEventListener('pointermove', onChartHover);
+    ui.chartCanvas.addEventListener('pointerleave', () => renderLiftCurve(-1));
+
     setupDrag();
 }
 
@@ -479,8 +490,9 @@ function pointInPolygon(x, y, poly) {
 // round-tripping through the DOM text
 const forces = { lift: 0, drag: 0 };
 
-function calculateForces() {
-    // Highly approximated "forces" based on pressure field bordering the airfoil
+// Highly approximated "forces" from the pressure field bordering the object,
+// in the same arbitrary units used by the readout.
+function computeRawForces() {
     let lift = 0;
     let drag = 0;
 
@@ -493,19 +505,24 @@ function calculateForces() {
                 let pLeft = fluid.s[fluid.IX(i - 1, j)] === 0 ? fluid.p[fluid.IX(i - 1, j)] : 0;
                 let pRight = fluid.s[fluid.IX(i + 1, j)] === 0 ? fluid.p[fluid.IX(i + 1, j)] : 0;
 
-                // Lift relates to pressure difference Y (bottom pushes up minus top pushes down)
-                // Actually if pBot > pTop, lift positive
+                // Lift: pressure difference in Y (bottom pushes up minus top down)
                 lift += (pBot - pTop);
-                // Drag relates to pressure difference X (front pushes right minus back pushes left)
+                // Drag: pressure difference in X (front pushes right minus back left)
                 drag += (pLeft - pRight);
             }
         }
     }
 
-    // Smoothing out the readout
+    return { lift: lift * 100, drag: drag * 100 };
+}
+
+function calculateForces() {
+    const raw = computeRawForces();
+
+    // Exponential smoothing of the readout
     const alpha = 0.1;
-    forces.lift = forces.lift * (1 - alpha) + lift * 100 * alpha;
-    forces.drag = forces.drag * (1 - alpha) + drag * 100 * alpha;
+    forces.lift = forces.lift * (1 - alpha) + raw.lift * alpha;
+    forces.drag = forces.drag * (1 - alpha) + raw.drag * alpha;
 
     ui.valLift.textContent = forces.lift.toFixed(2);
     ui.valDrag.textContent = forces.drag.toFixed(2);
@@ -527,7 +544,7 @@ function loop(now) {
     // Ignore long gaps (background tab, breakpoints)
     if (elapsed > 0.25) elapsed = 0.25;
 
-    if (config.isRunning) {
+    if (config.isRunning && !sweeping) {
         timeAccumulator += elapsed;
         let steps = 0;
         while (timeAccumulator >= SIM_STEP && steps < MAX_STEPS_PER_FRAME) {
@@ -917,6 +934,256 @@ function draw() {
     }
 
     drawObjectOutline(cs);
+}
+
+/* ---------------------------------------------------------------------------
+ * Angle-of-attack sweep + lift curve
+ *
+ * Steps the airfoil through a range of angles, letting the flow settle and
+ * averaging the force readout at each, then plots lift and drag vs angle so
+ * the stall (peak lift before it drops) is visible.
+ * ------------------------------------------------------------------------- */
+
+let sweeping = false;
+let sweepResults = [];
+let chartGeom = null; // { plotL, plotR } for hover mapping
+
+const SWEEP_MIN = -20, SWEEP_MAX = 20, SWEEP_STEP = 2;
+const SWEEP_SETTLE = 90; // steps to let the flow adapt at each angle
+const SWEEP_AVG = 40;    // steps averaged for the measurement
+
+const CHART = {
+    lift: '#3987e5',   // validated categorical slot (see dataviz palette)
+    drag: '#d95926',
+    grid: '#2c2c2a',
+    axis: '#4a4a47',
+    zero: '#6a6a66',
+    ink: '#f0f0f5',
+    muted: '#898781',
+    surface: '#101116'
+};
+
+function nextFrame() {
+    return new Promise(r => requestAnimationFrame(() => r()));
+}
+
+async function runSweep() {
+    if (sweeping || config.objectType !== 'airfoil') return;
+
+    sweeping = true;
+    ui.btnSweep.disabled = true;
+    ui.chartOverlay.classList.add('hidden');
+    ui.sweepStatus.classList.remove('hidden');
+
+    const prevAoa = config.aoa;
+    const uSpeed = Math.max(0.2, (config.speed / 100) * 2.0); // guarantee some flow
+    const results = [];
+
+    for (let a = SWEEP_MIN; a <= SWEEP_MAX; a += SWEEP_STEP) {
+        config.aoa = a;
+        ui.aoaSlider.value = a;
+        ui.aoaVal.textContent = `${a}°`;
+        updateObstacle();
+        ui.sweepStatus.textContent = `Sweeping…  α = ${a > 0 ? '+' : ''}${a}°`;
+
+        for (let k = 0; k < SWEEP_SETTLE; k++) fluid.step(config.dt, config.visc, 0, uSpeed);
+
+        let liftSum = 0, dragSum = 0;
+        for (let k = 0; k < SWEEP_AVG; k++) {
+            fluid.step(config.dt, config.visc, 0, uSpeed);
+            const f = computeRawForces();
+            liftSum += f.lift;
+            dragSum += f.drag;
+        }
+        results.push({ aoa: a, lift: liftSum / SWEEP_AVG, drag: dragSum / SWEEP_AVG });
+
+        await nextFrame(); // paint progress + current flow between angles
+    }
+
+    // Restore the pre-sweep angle
+    config.aoa = prevAoa;
+    ui.aoaSlider.value = prevAoa;
+    ui.aoaVal.textContent = `${prevAoa}°`;
+    updateObstacle();
+
+    sweepResults = results;
+    sweeping = false;
+    ui.btnSweep.disabled = false;
+    ui.sweepStatus.classList.add('hidden');
+
+    ui.chartOverlay.classList.remove('hidden');
+    renderLiftCurve(-1);
+    syncURL();
+}
+
+function onChartHover(e) {
+    if (!chartGeom || sweepResults.length === 0) return;
+    const rect = ui.chartCanvas.getBoundingClientRect();
+    const logicalX = (e.clientX - rect.left) * (360 / rect.width);
+    const frac = (logicalX - chartGeom.plotL) / (chartGeom.plotR - chartGeom.plotL);
+    const aoa = SWEEP_MIN + frac * (SWEEP_MAX - SWEEP_MIN);
+    let idx = Math.round((aoa - SWEEP_MIN) / SWEEP_STEP);
+    idx = Math.max(0, Math.min(sweepResults.length - 1, idx));
+    renderLiftCurve(idx);
+}
+
+function renderLiftCurve(hoverIndex) {
+    const cv = ui.chartCanvas;
+    const c = cv.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const W = 360, H = 240;
+    cv.width = W * dpr;
+    cv.height = H * dpr;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, W, H);
+
+    const mL = 40, mR = 46, mT = 26, mB = 30;
+    const plotL = mL, plotR = W - mR, plotT = mT, plotB = H - mB;
+    chartGeom = { plotL, plotR };
+
+    // Symmetric Y scale so the zero line sits where lift crosses it
+    let yMax = 0.5;
+    for (const r of sweepResults) yMax = Math.max(yMax, Math.abs(r.lift), Math.abs(r.drag));
+    yMax *= 1.12;
+
+    const xOf = (aoa) => plotL + ((aoa - SWEEP_MIN) / (SWEEP_MAX - SWEEP_MIN)) * (plotR - plotL);
+    const yOf = (val) => plotT + (1 - (val + yMax) / (2 * yMax)) * (plotB - plotT);
+
+    c.font = '10px JetBrains Mono, monospace';
+    c.textBaseline = 'middle';
+
+    // Gridlines + Y tick labels
+    c.strokeStyle = CHART.grid;
+    c.lineWidth = 1;
+    c.fillStyle = CHART.muted;
+    c.textAlign = 'right';
+    for (let t = -1; t <= 1; t += 0.5) {
+        const val = t * yMax;
+        const y = yOf(val);
+        c.beginPath();
+        c.moveTo(plotL, y);
+        c.lineTo(plotR, y);
+        c.stroke();
+        c.fillText(val.toFixed(1), plotL - 6, y);
+    }
+
+    // X ticks + labels
+    c.textAlign = 'center';
+    c.textBaseline = 'top';
+    for (let a = SWEEP_MIN; a <= SWEEP_MAX; a += 10) {
+        const x = xOf(a);
+        c.strokeStyle = CHART.grid;
+        c.beginPath();
+        c.moveTo(x, plotT);
+        c.lineTo(x, plotB);
+        c.stroke();
+        c.fillStyle = CHART.muted;
+        c.fillText(`${a}`, x, plotB + 6);
+    }
+    c.fillText('Angle of attack (°)', (plotL + plotR) / 2, H - 11);
+
+    // Emphasized zero line
+    c.strokeStyle = CHART.zero;
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.moveTo(plotL, yOf(0));
+    c.lineTo(plotR, yOf(0));
+    c.stroke();
+
+    // Y axis title, clear above the top gridline
+    c.fillStyle = CHART.muted;
+    c.textAlign = 'left';
+    c.textBaseline = 'top';
+    c.fillText('Force (arb.)', plotL - 34, plotT - 16);
+
+    if (sweepResults.length === 0) return;
+
+    const drawSeries = (key, color) => {
+        c.strokeStyle = color;
+        c.lineWidth = 2;
+        c.lineJoin = 'round';
+        c.beginPath();
+        sweepResults.forEach((r, i) => {
+            const x = xOf(r.aoa), y = yOf(r[key]);
+            if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+        });
+        c.stroke();
+
+        c.fillStyle = color;
+        for (const r of sweepResults) {
+            c.beginPath();
+            c.arc(xOf(r.aoa), yOf(r[key]), 2.2, 0, Math.PI * 2);
+            c.fill();
+        }
+
+        // Direct label at the series end
+        const last = sweepResults[sweepResults.length - 1];
+        c.textAlign = 'left';
+        c.textBaseline = 'middle';
+        c.fillText(key === 'lift' ? 'Lift' : 'Drag', plotR + 4, yOf(last[key]));
+    };
+
+    drawSeries('drag', CHART.drag);
+    drawSeries('lift', CHART.lift);
+
+    // Mark the stall (peak lift), if it is an interior maximum
+    let peak = 0;
+    for (let i = 1; i < sweepResults.length; i++) {
+        if (sweepResults[i].lift > sweepResults[peak].lift) peak = i;
+    }
+    const stall = sweepResults[peak];
+    const isInterior = peak > 0 && peak < sweepResults.length - 1;
+    if (isInterior) {
+        const px = xOf(stall.aoa), py = yOf(stall.lift);
+        c.strokeStyle = CHART.ink;
+        c.lineWidth = 1.5;
+        c.beginPath();
+        c.arc(px, py, 5, 0, Math.PI * 2);
+        c.stroke();
+        ui.chartNote.textContent = `Stall ≈ ${stall.aoa > 0 ? '+' : ''}${stall.aoa}°`;
+    } else {
+        ui.chartNote.textContent = 'No clear stall in ±20°';
+    }
+
+    // Hover crosshair + tooltip
+    if (hoverIndex >= 0 && hoverIndex < sweepResults.length) {
+        const r = sweepResults[hoverIndex];
+        const hx = xOf(r.aoa);
+        c.strokeStyle = 'rgba(240,240,245,0.35)';
+        c.lineWidth = 1;
+        c.beginPath();
+        c.moveTo(hx, plotT);
+        c.lineTo(hx, plotB);
+        c.stroke();
+
+        c.fillStyle = CHART.lift;
+        c.beginPath();
+        c.arc(hx, yOf(r.lift), 3.4, 0, Math.PI * 2);
+        c.fill();
+        c.fillStyle = CHART.drag;
+        c.beginPath();
+        c.arc(hx, yOf(r.drag), 3.4, 0, Math.PI * 2);
+        c.fill();
+
+        const lines = [
+            `α ${r.aoa > 0 ? '+' : ''}${r.aoa}°`,
+            `Lift ${r.lift.toFixed(1)}`,
+            `Drag ${r.drag.toFixed(1)}`
+        ];
+        const boxW = 78, boxH = 46;
+        let bx = hx + 8;
+        if (bx + boxW > plotR) bx = hx - 8 - boxW;
+        const by = plotT + 4;
+        c.fillStyle = 'rgba(10,10,12,0.9)';
+        c.strokeStyle = CHART.axis;
+        c.lineWidth = 1;
+        c.fillRect(bx, by, boxW, boxH);
+        c.strokeRect(bx, by, boxW, boxH);
+        c.textAlign = 'left';
+        c.textBaseline = 'top';
+        c.fillStyle = CHART.ink;
+        lines.forEach((ln, i) => c.fillText(ln, bx + 7, by + 7 + i * 13));
+    }
 }
 
 // Start app
