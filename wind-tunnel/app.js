@@ -18,8 +18,14 @@ const config = {
     aoa: 0, // degrees
     speed: 20, // 0 to 100 mapped to fluid u
     visc: 0.0000150, // default to Air (20°C)
-    vizMode: 'dye'
+    vizMode: 'dye',
+    objXFrac: 0.3, // object center as a fraction of the grid (draggable)
+    objYFrac: 0.5
 };
+
+// Keep the object clear of the inlet columns and the domain edges
+const OBJ_X_RANGE = [0.15, 0.7];
+const OBJ_Y_RANGE = [0.25, 0.75];
 
 // UI Elements
 const ui = {
@@ -138,6 +144,11 @@ function applyURLParams() {
         config.vizMode = viz;
         document.querySelector(`input[name="viz-mode"][value="${viz}"]`).checked = true;
     }
+
+    const ox = num('objx', OBJ_X_RANGE[0], OBJ_X_RANGE[1]);
+    if (ox !== null) config.objXFrac = ox;
+    const oy = num('objy', OBJ_Y_RANGE[0], OBJ_Y_RANGE[1]);
+    if (oy !== null) config.objYFrac = oy;
 }
 
 function syncURL() {
@@ -148,7 +159,9 @@ function syncURL() {
         speed: config.speed,
         visc: config.visc,
         rot: config.rotationSpeed,
-        viz: config.vizMode
+        viz: config.vizMode,
+        objx: config.objXFrac.toFixed(3),
+        objy: config.objYFrac.toFixed(3)
     });
     try {
         history.replaceState(null, '', '?' + q.toString());
@@ -271,16 +284,91 @@ function setupEvents() {
         ui.btnPause.textContent = config.isRunning ? 'Pause' : 'Resume';
         ui.statusBadge.innerHTML = config.isRunning ? '<span class="dot"></span> Running' : '<span class="dot" style="background:#ff4a4a; animation:none"></span> Paused';
     });
+
+    setupDrag();
 }
+
+/* ---------------------------------------------------------------------------
+ * Dragging the object
+ *
+ * The object can be repositioned by dragging it across the tunnel. Positions
+ * are stored as grid fractions so they survive resizes, and clamped to keep
+ * the object clear of the inlet and the walls.
+ * ------------------------------------------------------------------------- */
+
+let isDragging = false;
+let dragOffsetX = 0; // grid-units between object center and pointer at grab
+let dragOffsetY = 0;
+
+function pointerToGrid(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+        gx: (e.clientX - rect.left) / config.cellSize,
+        gy: (e.clientY - rect.top) / config.cellSize
+    };
+}
+
+function overObject(gx, gy) {
+    if (!objBounds) return false;
+    const pad = 2; // generous grab margin
+    return gx >= objBounds.minX - pad && gx <= objBounds.maxX + pad &&
+        gy >= objBounds.minY - pad && gy <= objBounds.maxY + pad;
+}
+
+function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+}
+
+function setupDrag() {
+    canvas.addEventListener('pointerdown', (e) => {
+        const { gx, gy } = pointerToGrid(e);
+        if (!overObject(gx, gy)) return;
+
+        isDragging = true;
+        dragOffsetX = config.nx * config.objXFrac - gx;
+        dragOffsetY = config.ny * config.objYFrac - gy;
+        canvas.setPointerCapture(e.pointerId);
+        canvas.style.cursor = 'grabbing';
+        canvas.style.touchAction = 'none'; // don't scroll the page while dragging
+        e.preventDefault();
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+        const { gx, gy } = pointerToGrid(e);
+
+        if (!isDragging) {
+            canvas.style.cursor = overObject(gx, gy) ? 'grab' : 'crosshair';
+            return;
+        }
+
+        config.objXFrac = clamp((gx + dragOffsetX) / config.nx, OBJ_X_RANGE[0], OBJ_X_RANGE[1]);
+        config.objYFrac = clamp((gy + dragOffsetY) / config.ny, OBJ_Y_RANGE[0], OBJ_Y_RANGE[1]);
+        updateObstacle();
+        e.preventDefault();
+    });
+
+    const endDrag = (e) => {
+        if (!isDragging) return;
+        isDragging = false;
+        canvas.style.cursor = 'grab';
+        canvas.style.touchAction = '';
+        if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+        syncURL();
+    };
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+}
+
+// Grid-space bounding box of the current object, for pointer hit-testing
+let objBounds = null;
 
 function updateObstacle() {
     fluid.clearObstacles();
     airfoilBoundary = [];
 
-    // Scale and position
-    // Center at 1/3 of the screen X, half screen Y
-    const cx = config.nx * 0.3;
-    const cy = config.ny * 0.5;
+    // Object center, positioned as a fraction of the grid (draggable)
+    const cx = config.nx * config.objXFrac;
+    const cy = config.ny * config.objYFrac;
 
     if (config.objectType === 'airfoil') {
         const coords = airfoilGen.generate(config.naca, 60);
@@ -321,6 +409,8 @@ function updateObstacle() {
         minY = Math.max(0, Math.floor(minY));
         maxY = Math.min(config.ny - 1, Math.ceil(maxY));
 
+        objBounds = { minX, maxX, minY, maxY };
+
         for (let j = minY; j <= maxY; j++) {
             for (let i = minX; i <= maxX; i++) {
                 if (pointInPolygon(i, j, airfoilBoundary)) {
@@ -345,6 +435,8 @@ function updateObstacle() {
         let maxX = Math.min(config.nx - 1, Math.ceil(cx + radius));
         let minY = Math.max(0, Math.floor(cy - radius));
         let maxY = Math.min(config.ny - 1, Math.ceil(cy + radius));
+
+        objBounds = { minX, maxX, minY, maxY };
 
         // angular velocity omega
         const maxOmega = 3.0; // Max rotation strength mapping
