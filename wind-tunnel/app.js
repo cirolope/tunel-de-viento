@@ -294,6 +294,10 @@ function pointInPolygon(x, y, poly) {
     return inside;
 }
 
+// Smoothed force readouts (arbitrary units), kept in JS instead of
+// round-tripping through the DOM text
+const forces = { lift: 0, drag: 0 };
+
 function calculateForces() {
     // Highly approximated "forces" based on pressure field bordering the airfoil
     let lift = 0;
@@ -319,13 +323,11 @@ function calculateForces() {
 
     // Smoothing out the readout
     const alpha = 0.1;
-    let currentLift = parseFloat(ui.valLift.innerText);
-    let currentDrag = parseFloat(ui.valDrag.innerText);
-    if (isNaN(currentLift)) currentLift = 0;
-    if (isNaN(currentDrag)) currentDrag = 0;
+    forces.lift = forces.lift * (1 - alpha) + lift * 100 * alpha;
+    forces.drag = forces.drag * (1 - alpha) + drag * 100 * alpha;
 
-    ui.valLift.innerText = (currentLift * (1 - alpha) + lift * 100 * alpha).toFixed(2);
-    ui.valDrag.innerText = (currentDrag * (1 - alpha) + drag * 100 * alpha).toFixed(2);
+    ui.valLift.textContent = forces.lift.toFixed(2);
+    ui.valDrag.textContent = forces.drag.toFixed(2);
 }
 
 // Fixed-timestep loop: the simulation always advances SIM_HZ steps per real
