@@ -279,12 +279,36 @@ function calculateForces() {
     ui.valDrag.innerText = (currentDrag * (1 - alpha) + drag * 100 * alpha).toFixed(2);
 }
 
-function loop() {
+// Fixed-timestep loop: the simulation always advances SIM_HZ steps per real
+// second regardless of the display refresh rate (60 vs 144 Hz monitors).
+const SIM_HZ = 60;
+const SIM_STEP = 1 / SIM_HZ;   // seconds of real time per simulation step
+const MAX_STEPS_PER_FRAME = 4; // drop backlog instead of spiraling when slow
+
+let lastFrameTime = null;
+let timeAccumulator = 0;
+
+function loop(now) {
+    if (lastFrameTime === null) lastFrameTime = now;
+    let elapsed = (now - lastFrameTime) / 1000;
+    lastFrameTime = now;
+    // Ignore long gaps (background tab, breakpoints)
+    if (elapsed > 0.25) elapsed = 0.25;
+
     if (config.isRunning) {
-        // Map UI speed to fluid units
-        let uSpeed = (config.speed / 100) * 2.0;
-        fluid.step(config.dt, config.visc, 0.0, uSpeed);
-        calculateForces();
+        timeAccumulator += elapsed;
+        let steps = 0;
+        while (timeAccumulator >= SIM_STEP && steps < MAX_STEPS_PER_FRAME) {
+            // Map UI speed to fluid units
+            let uSpeed = (config.speed / 100) * 2.0;
+            fluid.step(config.dt, config.visc, 0.0, uSpeed);
+            timeAccumulator -= SIM_STEP;
+            steps++;
+        }
+        if (timeAccumulator > SIM_STEP) timeAccumulator = SIM_STEP;
+        if (steps > 0) calculateForces();
+    } else {
+        timeAccumulator = 0;
     }
 
     draw();
