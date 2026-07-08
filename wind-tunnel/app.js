@@ -56,17 +56,25 @@ function init() {
 
 function resizeCanvas() {
     const parent = canvas.parentElement;
-    canvas.width = parent.clientWidth;
-    canvas.height = parent.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = parent.clientWidth;
+    const cssH = parent.clientHeight;
+
+    // Backing store at device resolution, drawing coordinates in CSS pixels
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // Calculate cell size based on height to keep aspect ratio
-    config.cellSize = canvas.height / config.ny;
+    config.cellSize = cssH / config.ny;
     // Adjust nx based on width
-    const newNx = Math.ceil(canvas.width / config.cellSize);
+    const newNx = Math.ceil(cssW / config.cellSize);
 
     if (newNx !== config.nx && fluid) {
+        const oldFluid = fluid;
         config.nx = newNx;
         fluid = new FluidGrid(config.nx, config.ny);
+        fluid.copyFieldsFrom(oldFluid);
         updateObstacle();
     }
 }

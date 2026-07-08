@@ -39,6 +39,23 @@ class FluidGrid {
         return (x) + (y) * this.nx;
     }
 
+    // Copy the overlapping region of another grid's fields (used to keep the
+    // flow alive when the grid is rebuilt on window resize).
+    copyFieldsFrom(other) {
+        const nxMin = Math.min(this.nx, other.nx);
+        const nyMin = Math.min(this.ny, other.ny);
+        for (let j = 0; j < nyMin; j++) {
+            for (let i = 0; i < nxMin; i++) {
+                const a = this.IX(i, j);
+                const b = other.IX(i, j);
+                this.u[a] = other.u[b];
+                this.v[a] = other.v[b];
+                this.p[a] = other.p[b];
+                this.d[a] = other.d[b];
+            }
+        }
+    }
+
     clearObstacles() {
         this.s.fill(0);
         this.obsU.fill(0);
