@@ -23,13 +23,30 @@ class FluidGrid {
         this.v0 = new Float32Array(this.numCells);
         this.d0 = new Float32Array(this.numCells);
 
+        // Scratch buffer for the MacCormack dye advection
+        this.mcc1 = new Float32Array(this.numCells);
+
         // Obstacle mask and velocities
         this.s = new Float32Array(this.numCells);
         this.s.fill(0); // All fluid initially
         this.obsU = new Float32Array(this.numCells);
         this.obsV = new Float32Array(this.numCells);
 
+        // Vorticity (curl) buffer, used by vorticity confinement
+        this.curl = new Float32Array(this.numCells);
+
         this.iter = 10; // Solver iterations for pressure (Poisson)
+
+        // Vorticity confinement strength. Semi-Lagrangian advection is very
+        // diffusive and smears out the vortices that make wakes interesting;
+        // this re-injects the small-scale swirl that would otherwise be lost,
+        // producing shear-layer roll-up and von Kármán shedding.
+        this.confinement = 6.0;
+
+        // Phase for the tiny inlet perturbation that breaks the perfect
+        // symmetry, so shedding actually starts instead of sitting in an
+        // unstable steady state forever.
+        this.perturbPhase = Math.random() * Math.PI * 2;
     }
 
     IX(x, y) {
@@ -89,11 +106,13 @@ class FluidGrid {
 
     // Step the simulation
     step(dt, visc, diff, windSpeed) {
-        // Option: Slowly pull all fluid velocity towards windSpeed (acting like a global wind drive)
+        // Weak global drive toward the freestream. Kept gentle: a strong pull
+        // (the old 0.99/0.01) relaxes the whole field back to uniform flow
+        // every step and erases the wake before any vortex can form.
+        const relax = 0.003;
         for (let i = 0; i < this.numCells; i++) {
             if (this.s[i] === 0) {
-                // dampen towards windSpeed a little to prevent stalling
-                this.u[i] = this.u[i] * 0.99 + windSpeed * 0.01;
+                this.u[i] = this.u[i] * (1 - relax) + windSpeed * relax;
             }
         }
 
@@ -114,17 +133,118 @@ class FluidGrid {
             this.diffuse(2, this.v, this.v0, visc, dt);
         }
 
+        // Re-inject the small-scale vorticity lost to numerical diffusion
+        this.vorticityConfinement(dt);
+
         // Project (make divergence free & calculate pressure)
         this.project(this.u, this.v, this.p, this.u0); // u0 is used as div temp array
 
-        // Move dye
-        this.advect(0, this.d, this.d0, this.u, this.v, dt);
+        // Keep velocities bounded so confinement can't make the sim blow up
+        this.clampVelocity(6.0);
+
+        // Move dye with a less diffusive scheme so the smoke actually rolls up
+        // into visible vortices instead of smearing into a uniform haze
+        this.advectDyeMacCormack(this.d0, this.u, this.v, dt);
 
         // Continuous input stream
         this.injectWind(windSpeed, dt);
     }
 
+    // MacCormack advection for the dye: a forward and a backward semi-Lagrangian
+    // pass estimate the scheme's own error and cancel most of it, cutting the
+    // numerical diffusion that would otherwise blur the smoke. The result is
+    // clamped to the source interpolation stencil so it can't overshoot.
+    advectDyeMacCormack(d0, u, v, dt) {
+        this.advect(0, this.d, d0, u, v, dt);        // forward: d = A(d0)
+        this.advect(0, this.mcc1, this.d, u, v, -dt); // backward: mcc1 = A⁻¹(d)
+
+        const nx = this.nx, ny = this.ny, s = this.s, d = this.d, mcc1 = this.mcc1;
+        const dt0x = dt * (nx - 2);
+        const dt0y = dt * (ny - 2);
+
+        for (let j = 1; j < ny - 1; j++) {
+            let idx = j * nx + 1;
+            for (let i = 1; i < nx - 1; i++, idx++) {
+                if (s[idx] === 1) continue;
+
+                // Re-trace to find the source stencil for clamping
+                let x = i - dt0x * u[idx];
+                let y = j - dt0y * v[idx];
+                if (x < 0.5) x = 0.5; else if (x > nx - 1.5) x = nx - 1.5;
+                if (y < 0.5) y = 0.5; else if (y > ny - 1.5) y = ny - 1.5;
+                const i0 = x | 0, j0 = y | 0;
+                const p00 = j0 * nx + i0;
+                const c00 = d0[p00], c10 = d0[p00 + 1], c01 = d0[p00 + nx], c11 = d0[p00 + nx + 1];
+                let lo = c00, hi = c00;
+                if (c10 < lo) lo = c10; else if (c10 > hi) hi = c10;
+                if (c01 < lo) lo = c01; else if (c01 > hi) hi = c01;
+                if (c11 < lo) lo = c11; else if (c11 > hi) hi = c11;
+
+                let corrected = d[idx] + 0.5 * (d0[idx] - mcc1[idx]);
+                if (corrected < lo) corrected = lo; else if (corrected > hi) corrected = hi;
+                d[idx] = corrected;
+            }
+        }
+        this.setBnd(0, this.d);
+    }
+
+    // z-component of the curl (vorticity) at each interior fluid cell
+    computeCurl() {
+        const nx = this.nx, ny = this.ny, s = this.s, u = this.u, v = this.v, curl = this.curl;
+        for (let j = 1; j < ny - 1; j++) {
+            let idx = j * nx + 1;
+            for (let i = 1; i < nx - 1; i++, idx++) {
+                if (s[idx] === 1) { curl[idx] = 0; continue; }
+                const dvdx = (v[idx + 1] - v[idx - 1]) * 0.5;
+                const dudy = (u[idx + nx] - u[idx - nx]) * 0.5;
+                curl[idx] = dvdx - dudy;
+            }
+        }
+    }
+
+    // Vorticity confinement (Fedkiw et al. 2001): add a body force that points
+    // along N × ω, where N is the unit gradient of |ω|. This drives velocity to
+    // curl around vorticity maxima, sharpening and sustaining vortices.
+    vorticityConfinement(dt) {
+        if (this.confinement <= 0) return;
+        this.computeCurl();
+
+        const eps = this.confinement;
+        const nx = this.nx, ny = this.ny, s = this.s, curl = this.curl;
+        for (let j = 2; j < ny - 2; j++) {
+            let idx = j * nx + 2;
+            for (let i = 2; i < nx - 2; i++, idx++) {
+                if (s[idx] === 1) continue;
+
+                const gx = (Math.abs(curl[idx + 1]) - Math.abs(curl[idx - 1])) * 0.5;
+                const gy = (Math.abs(curl[idx + nx]) - Math.abs(curl[idx - nx])) * 0.5;
+                const len = Math.sqrt(gx * gx + gy * gy) + 1e-5;
+                const nrmx = gx / len;
+                const nrmy = gy / len;
+                const w = curl[idx];
+
+                // f = eps * (N × ω ẑ) = eps * (Ny*w, -Nx*w)
+                this.u[idx] += eps * dt * (nrmy * w);
+                this.v[idx] += eps * dt * (-nrmx * w);
+            }
+        }
+    }
+
+    clampVelocity(cap) {
+        for (let i = 0; i < this.numCells; i++) {
+            if (this.u[i] > cap) this.u[i] = cap; else if (this.u[i] < -cap) this.u[i] = -cap;
+            if (this.v[i] > cap) this.v[i] = cap; else if (this.v[i] < -cap) this.v[i] = -cap;
+        }
+    }
+
     injectWind(windSpeed, dt) {
+        // A small time-varying + random cross-flow at the inlet. Without any
+        // asymmetry a symmetric obstacle sits in an unstable steady state and
+        // never sheds; this nudge lets the natural instability grow into a
+        // proper von Kármán street.
+        this.perturbPhase += dt * 3.0;
+        const wobble = Math.sin(this.perturbPhase) * windSpeed * 0.025;
+
         const tunnelInletWidth = Math.floor(this.ny);
         for (let j = 0; j < tunnelInletWidth; j++) {
             // Inject velocity in first few columns
@@ -132,7 +252,7 @@ class FluidGrid {
                 const idx = this.IX(i, j);
                 if (this.s[idx] === 0) {
                     this.u[idx] = windSpeed;
-                    this.v[idx] = 0;
+                    this.v[idx] = wobble + (Math.random() - 0.5) * windSpeed * 0.02;
                 }
             }
 
@@ -190,20 +310,18 @@ class FluidGrid {
     }
 
     linSolve(b, x, x0, a, c) {
-        let cRecip = 1.0 / c;
+        // Interior neighbours are always in range, so index arithmetic replaces
+        // the clamped IX() in this hot loop (the Poisson solve runs it iter times).
+        const cRecip = 1.0 / c;
+        const nx = this.nx, ny = this.ny, s = this.s;
         for (let k = 0; k < this.iter; k++) {
-            for (let j = 1; j < this.ny - 1; j++) {
-                for (let i = 1; i < this.nx - 1; i++) {
-                    if (this.s[this.IX(i, j)] === 0) { // Only solve if not obstacle
-                        x[this.IX(i, j)] =
-                            (x0[this.IX(i, j)] +
-                                a * (x[this.IX(i + 1, j)] +
-                                    x[this.IX(i - 1, j)] +
-                                    x[this.IX(i, j + 1)] +
-                                    x[this.IX(i, j - 1)])) *
-                            cRecip;
+            for (let j = 1; j < ny - 1; j++) {
+                let idx = j * nx + 1;
+                for (let i = 1; i < nx - 1; i++, idx++) {
+                    if (s[idx] === 0) {
+                        x[idx] = (x0[idx] + a * (x[idx + 1] + x[idx - 1] + x[idx + nx] + x[idx - nx])) * cRecip;
                     } else {
-                        x[this.IX(i, j)] = 0;
+                        x[idx] = 0;
                     }
                 }
             }
@@ -217,55 +335,49 @@ class FluidGrid {
     }
 
     advect(b, d, d0, u, v, dt) {
-        let i0, j0, i1, j1;
-        let x, y, s0, t0, s1, t1;
-        let dt0x = dt * (this.nx - 2);
-        let dt0y = dt * (this.ny - 2);
+        const nx = this.nx, ny = this.ny, s = this.s;
+        const dt0x = dt * (nx - 2);
+        const dt0y = dt * (ny - 2);
 
-        for (let j = 1; j < this.ny - 1; j++) {
-            for (let i = 1; i < this.nx - 1; i++) {
-                if (this.s[this.IX(i, j)] === 1) continue; // Skip obstacles
+        for (let j = 1; j < ny - 1; j++) {
+            let idx = j * nx + 1;
+            for (let i = 1; i < nx - 1; i++, idx++) {
+                if (s[idx] === 1) continue; // Skip obstacles
 
-                x = i - dt0x * u[this.IX(i, j)];
-                y = j - dt0y * v[this.IX(i, j)];
+                let x = i - dt0x * u[idx];
+                let y = j - dt0y * v[idx];
 
-                if (x < 0.5) x = 0.5;
-                if (x > this.nx + 0.5) x = this.nx + 0.5;
-                i0 = Math.floor(x);
-                i1 = i0 + 1;
+                // Clamp so the whole interpolation stencil stays in range
+                if (x < 0.5) x = 0.5; else if (x > nx - 1.5) x = nx - 1.5;
+                if (y < 0.5) y = 0.5; else if (y > ny - 1.5) y = ny - 1.5;
 
-                if (y < 0.5) y = 0.5;
-                if (y > this.ny + 0.5) y = this.ny + 0.5;
-                j0 = Math.floor(y);
-                j1 = j0 + 1;
+                const i0 = x | 0, j0 = y | 0;
+                const s1 = x - i0, s0 = 1.0 - s1;
+                const t1 = y - j0, t0 = 1.0 - t1;
 
-                s1 = x - i0;
-                s0 = 1.0 - s1;
-                t1 = y - j0;
-                t0 = 1.0 - t1;
+                const p00 = j0 * nx + i0;
+                const p10 = p00 + 1, p01 = p00 + nx, p11 = p00 + nx + 1;
 
                 // Bilinear interpolation
-                d[this.IX(i, j)] =
-                    s0 * (t0 * d0[this.IX(i0, j0)] + t1 * d0[this.IX(i0, j1)]) +
-                    s1 * (t0 * d0[this.IX(i1, j0)] + t1 * d0[this.IX(i1, j1)]);
+                d[idx] = s0 * (t0 * d0[p00] + t1 * d0[p01]) +
+                    s1 * (t0 * d0[p10] + t1 * d0[p11]);
             }
         }
         this.setBnd(b, d);
     }
 
     project(u, v, p, div) {
-        let hx = 1.0 / this.nx;
-        let hy = 1.0 / this.ny;
+        const hx = 1.0 / this.nx;
+        const hy = 1.0 / this.ny;
+        const nx = this.nx, ny = this.ny, s = this.s;
 
-        for (let j = 1; j < this.ny - 1; j++) {
-            for (let i = 1; i < this.nx - 1; i++) {
-                if (this.s[this.IX(i, j)] === 0) {
-                    div[this.IX(i, j)] =
-                        -0.5 *
-                        (u[this.IX(i + 1, j)] - u[this.IX(i - 1, j)]) * hx -
-                        0.5 *
-                        (v[this.IX(i, j + 1)] - v[this.IX(i, j - 1)]) * hy;
-                    p[this.IX(i, j)] = 0;
+        for (let j = 1; j < ny - 1; j++) {
+            let idx = j * nx + 1;
+            for (let i = 1; i < nx - 1; i++, idx++) {
+                if (s[idx] === 0) {
+                    div[idx] = -0.5 * (u[idx + 1] - u[idx - 1]) * hx
+                        - 0.5 * (v[idx + nx] - v[idx - nx]) * hy;
+                    p[idx] = 0;
                 }
             }
         }
@@ -276,22 +388,18 @@ class FluidGrid {
         // Solve Poisson equation for pressure
         this.linSolve(0, p, div, 1, 4);
 
-        for (let j = 1; j < this.ny - 1; j++) {
-            for (let i = 1; i < this.nx - 1; i++) {
-                if (this.s[this.IX(i, j)] === 0) {
-                    let p1 = p[this.IX(i + 1, j)];
-                    let p0 = p[this.IX(i - 1, j)];
-                    let p3 = p[this.IX(i, j + 1)];
-                    let p2 = p[this.IX(i, j - 1)];
+        for (let j = 1; j < ny - 1; j++) {
+            let idx = j * nx + 1;
+            for (let i = 1; i < nx - 1; i++, idx++) {
+                if (s[idx] === 0) {
+                    const pc = p[idx];
+                    let p1 = s[idx + 1] === 1 ? pc : p[idx + 1];
+                    let p0 = s[idx - 1] === 1 ? pc : p[idx - 1];
+                    let p3 = s[idx + nx] === 1 ? pc : p[idx + nx];
+                    let p2 = s[idx - nx] === 1 ? pc : p[idx - nx];
 
-                    // Simple boundary condition handling for pressure derivative
-                    if (this.s[this.IX(i + 1, j)] === 1) p1 = p[this.IX(i, j)];
-                    if (this.s[this.IX(i - 1, j)] === 1) p0 = p[this.IX(i, j)];
-                    if (this.s[this.IX(i, j + 1)] === 1) p3 = p[this.IX(i, j)];
-                    if (this.s[this.IX(i, j - 1)] === 1) p2 = p[this.IX(i, j)];
-
-                    u[this.IX(i, j)] -= 0.5 * (p1 - p0) / hx;
-                    v[this.IX(i, j)] -= 0.5 * (p3 - p2) / hy;
+                    u[idx] -= 0.5 * (p1 - p0) / hx;
+                    v[idx] -= 0.5 * (p3 - p2) / hy;
                 }
             }
         }
