@@ -65,12 +65,96 @@ function init() {
     window.addEventListener('resize', resizeCanvas);
 
     fluid = new FluidGrid(config.nx, config.ny);
+    applyURLParams();
     setupEvents();
     updateObstacle();
     updateReynolds();
     resetParticles();
 
     requestAnimationFrame(loop);
+}
+
+/* ---------------------------------------------------------------------------
+ * Shareable URLs: the tunnel setup is mirrored to the query string, so any
+ * configuration can be shared by copying the address bar.
+ * ------------------------------------------------------------------------- */
+
+const VIZ_MODES = ['dye', 'particles', 'velocity', 'velocity-contour', 'pressure'];
+
+function applyURLParams() {
+    const q = new URLSearchParams(location.search);
+    const num = (key, min, max) => {
+        const v = parseFloat(q.get(key));
+        return isNaN(v) ? null : Math.max(min, Math.min(max, v));
+    };
+
+    if (/^\d{4}$/.test(q.get('naca') || '')) {
+        config.naca = q.get('naca');
+        ui.nacaInput.value = config.naca;
+    }
+
+    const aoa = num('aoa', -20, 20);
+    if (aoa !== null) {
+        config.aoa = Math.round(aoa);
+        ui.aoaSlider.value = config.aoa;
+        ui.aoaVal.textContent = `${config.aoa}°`;
+    }
+
+    const speed = num('speed', 0, 100);
+    if (speed !== null) {
+        config.speed = Math.round(speed);
+        ui.speedSlider.value = config.speed;
+        ui.speedVal.textContent = config.speed;
+    }
+
+    const rot = num('rot', -100, 100);
+    if (rot !== null) {
+        config.rotationSpeed = Math.round(rot);
+        ui.rotationSlider.value = config.rotationSpeed;
+        ui.rotationVal.textContent = config.rotationSpeed;
+    }
+
+    const visc = num('visc', 0, 1);
+    if (visc !== null) {
+        for (const opt of ui.viscSelect.options) {
+            if (parseFloat(opt.value) === visc) {
+                config.visc = visc;
+                ui.viscSelect.value = opt.value;
+                break;
+            }
+        }
+    }
+
+    const obj = q.get('obj');
+    if (obj === 'airfoil' || obj === 'cylinder') {
+        config.objectType = obj;
+        document.querySelector(`input[name="object-type"][value="${obj}"]`).checked = true;
+        ui.groupAirfoil.classList.toggle('hidden', obj !== 'airfoil');
+        ui.groupCylinder.classList.toggle('hidden', obj !== 'cylinder');
+    }
+
+    const viz = q.get('viz');
+    if (VIZ_MODES.includes(viz)) {
+        config.vizMode = viz;
+        document.querySelector(`input[name="viz-mode"][value="${viz}"]`).checked = true;
+    }
+}
+
+function syncURL() {
+    const q = new URLSearchParams({
+        obj: config.objectType,
+        naca: config.naca,
+        aoa: config.aoa,
+        speed: config.speed,
+        visc: config.visc,
+        rot: config.rotationSpeed,
+        viz: config.vizMode
+    });
+    try {
+        history.replaceState(null, '', '?' + q.toString());
+    } catch (e) {
+        // file:// may not allow replaceState; sharing only works when served
+    }
 }
 
 function resizeCanvas() {
@@ -99,6 +183,11 @@ function resizeCanvas() {
 }
 
 function setupEvents() {
+    // Mirror any control change into the query string (event delegation)
+    const panel = document.querySelector('.controls-panel');
+    panel.addEventListener('input', syncURL);
+    panel.addEventListener('change', syncURL);
+
     ui.objectRadios.forEach(radio => {
         radio.addEventListener('change', (e) => {
             if (e.target.checked) {
