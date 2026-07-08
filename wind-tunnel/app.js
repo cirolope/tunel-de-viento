@@ -291,260 +291,265 @@ function loop() {
     requestAnimationFrame(loop);
 }
 
+/* ---------------------------------------------------------------------------
+ * Rendering
+ *
+ * Field modes (dye, velocity contour, pressure) write one pixel per grid cell
+ * into an offscreen canvas of size nx x ny, which is then scaled up onto the
+ * visible canvas in a single drawImage call. Bilinear smoothing of the upscale
+ * doubles as free interpolation between cells.
+ * ------------------------------------------------------------------------- */
+
+const fieldCanvas = document.createElement('canvas');
+const fieldCtx = fieldCanvas.getContext('2d');
+let fieldImage = null;
+
+// Matches the airfoil fill color so smoothed edges blend into the outline
+const OBSTACLE_RGB = [30, 31, 38];
+
+function ensureFieldBuffer() {
+    if (fieldCanvas.width !== config.nx || fieldCanvas.height !== config.ny) {
+        fieldCanvas.width = config.nx;
+        fieldCanvas.height = config.ny;
+        fieldImage = fieldCtx.createImageData(config.nx, config.ny);
+    }
+}
+
+function setCell(data, idx, r, g, b) {
+    const p = idx * 4;
+    data[p] = r;
+    data[p + 1] = g;
+    data[p + 2] = b;
+    data[p + 3] = 255;
+}
+
+function renderDyeField(data) {
+    for (let idx = 0; idx < fluid.numCells; idx++) {
+        if (fluid.s[idx] === 1) {
+            setCell(data, idx, OBSTACLE_RGB[0], OBSTACLE_RGB[1], OBSTACLE_RGB[2]);
+            continue;
+        }
+        const c = Math.min(255, fluid.d[idx] * 255);
+        setCell(data, idx, c * 0.5, c, c);
+    }
+}
+
+// Max velocity magnitude over the interior (skips inlet/outlet columns)
+function maxVelocityMag() {
+    let maxV = 0.001;
+    for (let j = 1; j < fluid.ny - 1; j++) {
+        for (let i = 4; i < fluid.nx - 4; i++) {
+            const idx = fluid.IX(i, j);
+            if (fluid.s[idx] === 1) continue;
+            const u = fluid.u[idx];
+            const v = fluid.v[idx];
+            const mag = Math.sqrt(u * u + v * v);
+            if (mag > maxV) maxV = mag;
+        }
+    }
+    return maxV;
+}
+
+// Jet colormap: blue -> cyan -> green -> yellow -> red for t in [0, 1]
+function jetColor(t) {
+    let r = 0, g = 0, b = 0;
+    if (t < 0.25) {
+        r = 0; g = 4 * t; b = 1;
+    } else if (t < 0.5) {
+        r = 0; g = 1; b = 1 - 4 * (t - 0.25);
+    } else if (t < 0.75) {
+        r = 4 * (t - 0.5); g = 1; b = 0;
+    } else {
+        r = 1; g = 1 - 4 * (t - 0.75); b = 0;
+    }
+    return [r * 255, g * 255, b * 255];
+}
+
+function renderContourField(data, maxV) {
+    const vScale = 1.0 / maxV;
+    for (let idx = 0; idx < fluid.numCells; idx++) {
+        if (fluid.s[idx] === 1) {
+            setCell(data, idx, OBSTACLE_RGB[0], OBSTACLE_RGB[1], OBSTACLE_RGB[2]);
+            continue;
+        }
+        const u = fluid.u[idx];
+        const v = fluid.v[idx];
+        const mag = Math.sqrt(u * u + v * v);
+        const t = Math.min(1.0, mag * vScale);
+        const [r, g, b] = jetColor(t);
+        setCell(data, idx, r, g, b);
+    }
+}
+
+function renderPressureField(data) {
+    // Max absolute pressure for normalization, ignoring the very edges
+    let maxAbsP = 0.001;
+    for (let j = 1; j < fluid.ny - 1; j++) {
+        for (let i = 4; i < fluid.nx - 4; i++) {
+            const idx = fluid.IX(i, j);
+            if (fluid.s[idx] === 1) continue;
+            const p = Math.abs(fluid.p[idx]);
+            if (p > maxAbsP) maxAbsP = p;
+        }
+    }
+
+    // Multiplier to make the differences more visible
+    const pScale = 2.0 / maxAbsP;
+
+    for (let idx = 0; idx < fluid.numCells; idx++) {
+        if (fluid.s[idx] === 1) {
+            setCell(data, idx, OBSTACLE_RGB[0], OBSTACLE_RGB[1], OBSTACLE_RGB[2]);
+            continue;
+        }
+        const p = fluid.p[idx] * pScale;
+
+        // Blue (negative pressure) -> White (0) -> Red (positive pressure)
+        let r, g, b;
+        if (p < 0) {
+            const t = Math.min(1.0, -p);
+            r = 255 * (1 - t);
+            g = 255 * (1 - t);
+            b = 255;
+        } else {
+            const t = Math.min(1.0, p);
+            r = 255;
+            g = 255 * (1 - t);
+            b = 255 * (1 - t);
+        }
+        setCell(data, idx, r, g, b);
+    }
+}
+
+function drawVelocityVectors(cs) {
+    const vScale = 15; // Scale multiplier for the vector lines
+
+    for (let j = 1; j < fluid.ny; j += 2) {
+        for (let i = 1; i < fluid.nx; i += 2) {
+            if (fluid.s[fluid.IX(i, j)] === 1) continue;
+
+            let u = fluid.u[fluid.IX(i, j)];
+            let v = fluid.v[fluid.IX(i, j)];
+            let mag = Math.sqrt(u * u + v * v);
+
+            // Skip very small velocities to avoid clutter
+            if (mag < 0.1) continue;
+
+            let cx = i * cs + cs / 2;
+            let cy = j * cs + cs / 2;
+
+            // Color based on magnitude (fast = bright cyan, slow = dark green/blue)
+            let alpha = Math.min(1.0, mag / 2.0);
+            let hue = 180 - Math.min(60, mag * 20); // shifts from Cyan (180) to Green (120) as it speeds up
+            ctx.strokeStyle = `hsla(${hue}, 100%, 60%, ${alpha})`;
+            ctx.fillStyle = ctx.strokeStyle;
+            ctx.lineWidth = 1.5;
+
+            let endX = cx + u * vScale;
+            let endY = cy + v * vScale;
+
+            ctx.beginPath();
+            // Draw the line
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(endX, endY);
+            ctx.stroke();
+
+            // Draw a small dot at the head to indicate direction
+            ctx.beginPath();
+            ctx.arc(endX, endY, 1.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+}
+
+function drawContourLegend(maxV) {
+    const legW = 20;
+    const legH = 200;
+    const legX = 20;
+    const legY = 30;
+
+    const grad = ctx.createLinearGradient(0, legY + legH, 0, legY);
+    grad.addColorStop(0, 'blue');
+    grad.addColorStop(0.25, 'cyan');
+    grad.addColorStop(0.5, 'lime');
+    grad.addColorStop(0.75, 'yellow');
+    grad.addColorStop(1, 'red');
+
+    ctx.fillStyle = grad;
+    ctx.fillRect(legX, legY, legW, legH);
+
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(legX, legY, legW, legH);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = '12px JetBrains Mono, monospace';
+    ctx.textAlign = 'left';
+    ctx.shadowColor = 'rgba(0,0,0,0.8)';
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 1;
+
+    for (let i = 0; i <= 5; i++) {
+        let val = maxV * i / 5.0;
+        let yPos = legY + legH - (i / 5.0) * legH;
+        ctx.textBaseline = 'middle';
+        ctx.fillText(val.toFixed(2), legX + legW + 8, yPos);
+    }
+
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('Velocity Mag.', legX, legY - 8);
+
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+}
+
+function drawObjectOutline(cs) {
+    if (airfoilBoundary.length === 0) return;
+
+    ctx.fillStyle = '#1e1f26';
+    ctx.strokeStyle = '#9aa0a6';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(airfoilBoundary[0].x * cs, airfoilBoundary[0].y * cs);
+    for (let i = 1; i < airfoilBoundary.length; i++) {
+        ctx.lineTo(airfoilBoundary[i].x * cs, airfoilBoundary[i].y * cs);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+}
+
 function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const cs = config.cellSize;
 
-    if (config.vizMode === 'dye') {
-        // Render Smoke/Dye
-        const imgData = ctx.createImageData(canvas.width, canvas.height);
-        const data = imgData.data;
+    if (config.vizMode === 'velocity') {
+        drawVelocityVectors(cs);
+    } else {
+        ensureFieldBuffer();
+        const data = fieldImage.data;
+        let maxV = 0;
 
-        for (let j = 0; j < fluid.ny; j++) {
-            for (let i = 0; i < fluid.nx; i++) {
-                let idx = fluid.IX(i, j);
-                let d = fluid.d[idx];
-
-                // Obstacle
-                if (fluid.s[idx] === 1) continue;
-
-                let c = Math.min(255, d * 255);
-
-                // Map to fluid color (Cyan/White tinted)
-                let pxX = ~~(i * cs);
-                let pxY = ~~(j * cs);
-                let endX = Math.min(canvas.width, pxX + cs);
-                let endY = Math.min(canvas.height, pxY + cs);
-
-                for (let py = pxY; py < endY; py++) {
-                    for (let px = pxX; px < endX; px++) {
-                        let pIdx = (py * canvas.width + px) * 4;
-                        data[pIdx] = c * 0.5;      // R
-                        data[pIdx + 1] = c;        // G
-                        data[pIdx + 2] = c;        // B
-                        data[pIdx + 3] = 255;      // A
-                    }
-                }
-            }
-        }
-        ctx.putImageData(imgData, 0, 0);
-
-    } else if (config.vizMode === 'velocity') {
-        // Render Velocity Field (vectors)
-        const vScale = 15; // Scale multiplier for the vector lines
-
-        for (let j = 1; j < fluid.ny; j += 2) {
-            for (let i = 1; i < fluid.nx; i += 2) {
-                if (fluid.s[fluid.IX(i, j)] === 1) continue;
-
-                let u = fluid.u[fluid.IX(i, j)];
-                let v = fluid.v[fluid.IX(i, j)];
-                let mag = Math.sqrt(u * u + v * v);
-
-                // Skip very small velocities to avoid clutter
-                if (mag < 0.1) continue;
-
-                let cx = i * cs + cs / 2;
-                let cy = j * cs + cs / 2;
-
-                // Color based on magnitude (fast = bright cyan, slow = dark green/blue)
-                let alpha = Math.min(1.0, mag / 2.0);
-                let hue = 180 - Math.min(60, mag * 20); // shifts from Cyan (180) to Green (120) as it speeds up
-                ctx.strokeStyle = `hsla(${hue}, 100%, 60%, ${alpha})`;
-                ctx.fillStyle = ctx.strokeStyle;
-                ctx.lineWidth = 1.5;
-
-                let endX = cx + u * vScale;
-                let endY = cy + v * vScale;
-
-                ctx.beginPath();
-                // Draw the line
-                ctx.moveTo(cx, cy);
-                ctx.lineTo(endX, endY);
-                ctx.stroke();
-
-                // Draw a small dot at the head to indicate direction
-                ctx.beginPath();
-                ctx.arc(endX, endY, 1.5, 0, Math.PI * 2);
-                ctx.fill();
-            }
-        }
-    } else if (config.vizMode === 'velocity-contour') {
-        const imgData = ctx.createImageData(canvas.width, canvas.height);
-        const data = imgData.data;
-
-        // Find max velocity magnitude for normalization
-        let maxV = 0.001;
-        for (let j = 1; j < fluid.ny - 1; j++) {
-            for (let i = 4; i < fluid.nx - 4; i++) {
-                if (fluid.s[fluid.IX(i, j)] === 1) continue;
-                let u = fluid.u[fluid.IX(i, j)];
-                let v = fluid.v[fluid.IX(i, j)];
-                let mag = Math.sqrt(u * u + v * v);
-                if (mag > maxV) maxV = mag;
-            }
+        if (config.vizMode === 'dye') {
+            renderDyeField(data);
+        } else if (config.vizMode === 'velocity-contour') {
+            maxV = maxVelocityMag();
+            renderContourField(data, maxV);
+        } else if (config.vizMode === 'pressure') {
+            renderPressureField(data);
         }
 
-        const vScale = 1.0 / maxV;
+        fieldCtx.putImageData(fieldImage, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(fieldCanvas, 0, 0, config.nx * cs, config.ny * cs);
 
-        for (let j = 0; j < fluid.ny; j++) {
-            for (let i = 0; i < fluid.nx; i++) {
-                let idx = fluid.IX(i, j);
-                if (fluid.s[idx] === 1) {
-                    continue;
-                }
-
-                let u = fluid.u[idx];
-                let v = fluid.v[idx];
-                let mag = Math.sqrt(u * u + v * v);
-                
-                // Normalize and clamp
-                let t = Math.min(1.0, mag * vScale);
-
-                // Jet colormap
-                let r = 0, g = 0, b = 0;
-                if (t < 0.25) {
-                    r = 0; g = 4 * t; b = 1;
-                } else if (t < 0.5) {
-                    r = 0; g = 1; b = 1 - 4 * (t - 0.25);
-                } else if (t < 0.75) {
-                    r = 4 * (t - 0.5); g = 1; b = 0;
-                } else {
-                    r = 1; g = 1 - 4 * (t - 0.75); b = 0;
-                }
-
-                let pxX = ~~(i * cs);
-                let pxY = ~~(j * cs);
-                let endX = Math.min(canvas.width, pxX + cs);
-                let endY = Math.min(canvas.height, pxY + cs);
-
-                for (let py = pxY; py < endY; py++) {
-                    for (let px = pxX; px < endX; px++) {
-                        let pIdx = (py * canvas.width + px) * 4;
-                        data[pIdx] = r * 255;
-                        data[pIdx + 1] = g * 255;
-                        data[pIdx + 2] = b * 255;
-                        data[pIdx + 3] = 255;
-                    }
-                }
-            }
+        if (config.vizMode === 'velocity-contour') {
+            drawContourLegend(maxV);
         }
-        ctx.putImageData(imgData, 0, 0);
-
-        // Draw Legend
-        const legW = 20;
-        const legH = 200;
-        const legX = 20;
-        const legY = 30;
-        
-        const grad = ctx.createLinearGradient(0, legY + legH, 0, legY);
-        grad.addColorStop(0, 'blue');
-        grad.addColorStop(0.25, 'cyan');
-        grad.addColorStop(0.5, 'lime');
-        grad.addColorStop(0.75, 'yellow');
-        grad.addColorStop(1, 'red');
-
-        ctx.fillStyle = grad;
-        ctx.fillRect(legX, legY, legW, legH);
-        
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(legX, legY, legW, legH);
-
-        ctx.fillStyle = '#fff';
-        ctx.font = '12px JetBrains Mono, monospace';
-        ctx.textAlign = 'left';
-        ctx.shadowColor = 'rgba(0,0,0,0.8)';
-        ctx.shadowBlur = 4;
-        ctx.shadowOffsetX = 1;
-        ctx.shadowOffsetY = 1;
-
-        for (let i = 0; i <= 5; i++) {
-            let val = maxV * i / 5.0;
-            let yPos = legY + legH - (i / 5.0) * legH;
-            ctx.textBaseline = 'middle';
-            ctx.fillText(val.toFixed(2), legX + legW + 8, yPos);
-        }
-
-        ctx.textBaseline = 'bottom';
-        ctx.fillText('Velocity Mag.', legX, legY - 8);
-        
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 0;
-
-    } else if (config.vizMode === 'pressure') {
-        // Render Pressure Map
-        const imgData = ctx.createImageData(canvas.width, canvas.height);
-        const data = imgData.data;
-
-        // Find max absolute pressure for normalization, ignoring the very edges
-        let maxAbsP = 0.001;
-        for (let j = 1; j < fluid.ny - 1; j++) {
-            for (let i = 4; i < fluid.nx - 4; i++) {
-                if (fluid.s[fluid.IX(i, j)] === 1) continue;
-                let p = Math.abs(fluid.p[fluid.IX(i, j)]);
-                if (p > maxAbsP) maxAbsP = p;
-            }
-        }
-
-        // Apply a multiplier to make the differences more visible
-        const pScale = 2.0 / maxAbsP;
-
-        for (let j = 0; j < fluid.ny; j++) {
-            for (let i = 0; i < fluid.nx; i++) {
-                let idx = fluid.IX(i, j);
-                if (fluid.s[idx] === 1) continue;
-
-                let p = fluid.p[idx] * pScale;
-
-                // Color map: Blue (negative pressure) -> White (0) -> Red (positive pressure)
-                let r, g, b;
-                if (p < 0) {
-                    let t = Math.min(1.0, -p);
-                    r = 255 * (1 - t);
-                    g = 255 * (1 - t);
-                    b = 255; // Solid blue
-                } else {
-                    let t = Math.min(1.0, p);
-                    r = 255; // Solid red
-                    g = 255 * (1 - t);
-                    b = 255 * (1 - t);
-                }
-
-                let pxX = ~~(i * cs);
-                let pxY = ~~(j * cs);
-                let endX = Math.min(canvas.width, pxX + cs);
-                let endY = Math.min(canvas.height, pxY + cs);
-
-                for (let py = pxY; py < endY; py++) {
-                    for (let px = pxX; px < endX; px++) {
-                        let pIdx = (py * canvas.width + px) * 4;
-                        data[pIdx] = ~~r;
-                        data[pIdx + 1] = ~~g;
-                        data[pIdx + 2] = ~~b;
-                        data[pIdx + 3] = 255;
-                    }
-                }
-            }
-        }
-        ctx.putImageData(imgData, 0, 0);
     }
 
-    // Draw Airfoil Outline
-    if (airfoilBoundary.length > 0) {
-        ctx.fillStyle = '#1e1f26';
-        ctx.strokeStyle = '#9aa0a6';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(airfoilBoundary[0].x * cs, airfoilBoundary[0].y * cs);
-        for (let i = 1; i < airfoilBoundary.length; i++) {
-            ctx.lineTo(airfoilBoundary[i].x * cs, airfoilBoundary[i].y * cs);
-        }
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-    }
+    drawObjectOutline(cs);
 }
 
 // Start app
