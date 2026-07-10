@@ -35,6 +35,14 @@ class FluidGrid {
         // Vorticity (curl) buffer, used by vorticity confinement
         this.curl = new Float32Array(this.numCells);
 
+        // Streak/noise field carried by the flow. Advecting a random texture
+        // with the velocity stretches it into fibres aligned with the
+        // streamlines — the "flowing threads" look of a real wind-tunnel /
+        // CFD view. It is purely cosmetic and never feeds back into the solve.
+        this.streak = new Float32Array(this.numCells);
+        this.streak0 = new Float32Array(this.numCells);
+        for (let i = 0; i < this.numCells; i++) this.streak[i] = Math.random();
+
         this.iter = 10; // Solver iterations for pressure (Poisson)
 
         // Vorticity confinement strength. Semi-Lagrangian advection is very
@@ -69,6 +77,7 @@ class FluidGrid {
                 this.v[a] = other.v[b];
                 this.p[a] = other.p[b];
                 this.d[a] = other.d[b];
+                this.streak[a] = other.streak[b];
             }
         }
     }
@@ -146,6 +155,9 @@ class FluidGrid {
         // into visible vortices instead of smearing into a uniform haze
         this.advectDyeMacCormack(this.d0, this.u, this.v, dt);
 
+        // Carry the cosmetic streak texture along with the flow
+        this.advectStreak(dt);
+
         // Continuous input stream
         this.injectWind(windSpeed, dt);
     }
@@ -186,6 +198,32 @@ class FluidGrid {
             }
         }
         this.setBnd(0, this.d);
+    }
+
+    // Advect the streak texture with the current velocity and constantly
+    // re-seed fresh noise so it never smears into a flat grey. The advection
+    // stretches the noise along the streamlines (cheap Line-Integral-
+    // Convolution look); the reseeding keeps sharp fibres feeding in from the
+    // inlet and sprinkled through the field.
+    advectStreak(dt) {
+        this.streak0.set(this.streak);
+        this.advect(0, this.streak, this.streak0, this.u, this.v, dt);
+
+        const nx = this.nx, ny = this.ny, s = this.s, streak = this.streak;
+
+        // Fresh threads entering from the inlet
+        for (let j = 0; j < ny; j++) {
+            for (let i = 0; i < 3; i++) {
+                streak[this.IX(i, j)] = Math.random();
+            }
+        }
+
+        // Sprinkle new noise so contrast is sustained downstream as well
+        const reseed = (this.numCells * 0.035) | 0;
+        for (let n = 0; n < reseed; n++) {
+            const idx = (Math.random() * this.numCells) | 0;
+            if (s[idx] === 0) streak[idx] = Math.random();
+        }
     }
 
     // z-component of the curl (vorticity) at each interior fluid cell

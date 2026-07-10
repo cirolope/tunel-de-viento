@@ -7,8 +7,8 @@ let airfoilBoundary = [];
 
 // Settings
 const config = {
-    nx: 120, // grid resolution X
-    ny: 60,  // grid resolution Y
+    nx: 160, // grid resolution X
+    ny: 80,  // grid resolution Y
     cellSize: 0,
     dt: 0.1,
     isRunning: true,
@@ -18,7 +18,7 @@ const config = {
     aoa: 0, // degrees
     speed: 20, // 0 to 100 mapped to fluid u
     visc: 0.0000150, // default to Air (20°C)
-    vizMode: 'dye',
+    vizMode: 'velocity-contour',
     objXFrac: 0.3, // object center as a fraction of the grid (draggable)
     objYFrac: 0.5
 };
@@ -746,39 +746,34 @@ function renderDyeField(data) {
     }
 }
 
-// Max velocity magnitude over the interior (skips inlet/outlet columns)
-function maxVelocityMag() {
-    let maxV = 0.001;
-    for (let j = 1; j < fluid.ny - 1; j++) {
-        for (let i = 4; i < fluid.nx - 4; i++) {
-            const idx = fluid.IX(i, j);
-            if (fluid.s[idx] === 1) continue;
-            const u = fluid.u[idx];
-            const v = fluid.v[idx];
-            const mag = Math.sqrt(u * u + v * v);
-            if (mag > maxV) maxV = mag;
-        }
-    }
-    return maxV;
+// Turbo colormap (Google, Anton Mikhailov) via its published polynomial
+// approximation. Perceptually smoother than jet and gives the deep-blue →
+// teal → green → yellow → red range that reads as a proper CFD velocity map.
+function turboColor(t) {
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    const r = 34.61 + t * (1172.33 + t * (-10793.56 + t * (33300.12 + t * (-38394.49 + t * 14825.05))));
+    const g = 23.31 + t * (557.33 + t * (1225.33 + t * (-3574.96 + t * (1073.77 + t * 707.56))));
+    const b = 27.20 + t * (3211.10 + t * (-15327.97 + t * (27814.00 + t * (-22569.18 + t * 6838.66))));
+    return [r, g, b];
 }
 
-// Jet colormap: blue -> cyan -> green -> yellow -> red for t in [0, 1]
-function jetColor(t) {
-    let r = 0, g = 0, b = 0;
-    if (t < 0.25) {
-        r = 0; g = 4 * t; b = 1;
-    } else if (t < 0.5) {
-        r = 0; g = 1; b = 1 - 4 * (t - 0.25);
-    } else if (t < 0.75) {
-        r = 4 * (t - 0.5); g = 1; b = 0;
-    } else {
-        r = 1; g = 1 - 4 * (t - 0.75); b = 0;
-    }
-    return [r * 255, g * 255, b * 255];
+// Freestream velocity in the solver's units (mirrors the drive in loop()).
+function freestreamSpeed() {
+    return Math.max(0.2, (config.speed / 100) * 2.0);
+}
+
+// Full-scale velocity for the colour map. Normalising to a fixed multiple of
+// the freestream (rather than the flickering field maximum) keeps the colours
+// steady: undisturbed flow sits green, the suction peak over the airfoil runs
+// yellow→red, and stagnation / wake fall to blue — the stable reading a real
+// tunnel view gives.
+function contourReference() {
+    return freestreamSpeed() * 2.2;
 }
 
 function renderContourField(data, maxV) {
     const vScale = 1.0 / maxV;
+    const streak = fluid.streak;
     for (let idx = 0; idx < fluid.numCells; idx++) {
         if (fluid.s[idx] === 1) {
             setCell(data, idx, OBSTACLE_RGB[0], OBSTACLE_RGB[1], OBSTACLE_RGB[2]);
@@ -788,8 +783,12 @@ function renderContourField(data, maxV) {
         const v = fluid.v[idx];
         const mag = Math.sqrt(u * u + v * v);
         const t = Math.min(1.0, mag * vScale);
-        const [r, g, b] = jetColor(t);
-        setCell(data, idx, r, g, b);
+        const c = turboColor(t);
+        // Modulate brightness by the advected noise to draw the flowing fibres.
+        // Values can overshoot 255 for bright filament highlights; the
+        // Uint8ClampedArray backing the ImageData clamps them for free.
+        const shade = 0.55 + 0.75 * streak[idx];
+        setCell(data, idx, c[0] * shade, c[1] * shade, c[2] * shade);
     }
 }
 
@@ -880,11 +879,10 @@ function drawContourLegend(maxV) {
     const legY = 30;
 
     const grad = ctx.createLinearGradient(0, legY + legH, 0, legY);
-    grad.addColorStop(0, 'blue');
-    grad.addColorStop(0.25, 'cyan');
-    grad.addColorStop(0.5, 'lime');
-    grad.addColorStop(0.75, 'yellow');
-    grad.addColorStop(1, 'red');
+    for (let s = 0; s <= 10; s++) {
+        const c = turboColor(s / 10);
+        grad.addColorStop(s / 10, `rgb(${c[0] | 0}, ${c[1] | 0}, ${c[2] | 0})`);
+    }
 
     ctx.fillStyle = grad;
     ctx.fillRect(legX, legY, legW, legH);
@@ -919,17 +917,25 @@ function drawContourLegend(maxV) {
 function drawObjectOutline(cs) {
     if (airfoilBoundary.length === 0) return;
 
-    ctx.fillStyle = '#1e1f26';
-    ctx.strokeStyle = '#9aa0a6';
-    ctx.lineWidth = 2;
+    ctx.save();
     ctx.beginPath();
     ctx.moveTo(airfoilBoundary[0].x * cs, airfoilBoundary[0].y * cs);
     for (let i = 1; i < airfoilBoundary.length; i++) {
         ctx.lineTo(airfoilBoundary[i].x * cs, airfoilBoundary[i].y * cs);
     }
     ctx.closePath();
+
+    // Near-black silhouette so the object reads as a solid body against the
+    // bright flow, with a crisp white outline that pops in every colour map.
+    ctx.fillStyle = '#0b0d12';
     ctx.fill();
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+    ctx.shadowBlur = 6;
     ctx.stroke();
+    ctx.restore();
 }
 
 function draw() {
@@ -948,7 +954,7 @@ function draw() {
         if (config.vizMode === 'dye') {
             renderDyeField(data);
         } else if (config.vizMode === 'velocity-contour') {
-            maxV = maxVelocityMag();
+            maxV = contourReference();
             renderContourField(data, maxV);
         } else if (config.vizMode === 'pressure') {
             renderPressureField(data);
