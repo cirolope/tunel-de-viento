@@ -53,8 +53,14 @@ const ui = {
     chartClose: document.getElementById('chart-close'),
     chartCanvas: document.getElementById('lift-chart'),
     chartNote: document.getElementById('chart-note'),
-    sweepStatus: document.getElementById('sweep-status')
+    sweepStatus: document.getElementById('sweep-status'),
+    hudPause: document.getElementById('hud-pause'),
+    hudNaca: document.getElementById('hud-naca'),
+    hudAoa: document.getElementById('hud-aoa'),
+    miniLift: document.getElementById('mini-lift')
 };
+
+const miniCtx = ui.miniLift.getContext('2d');
 
 // Reynolds number for a reference chord of 1 m, with the speed slider read
 // as airspeed in m/s and the select as kinematic viscosity in m²/s.
@@ -218,6 +224,7 @@ function setupEvents() {
                     ui.groupAirfoil.classList.add('hidden');
                     ui.groupCylinder.classList.remove('hidden');
                 }
+                syncHud();
                 updateObstacle();
             }
         });
@@ -226,6 +233,7 @@ function setupEvents() {
     ui.rotationSlider.addEventListener('input', (e) => {
         config.rotationSpeed = parseInt(e.target.value);
         ui.rotationVal.textContent = config.rotationSpeed;
+        syncHud();
         if (config.objectType === 'cylinder') updateObstacle();
     });
 
@@ -240,6 +248,7 @@ function setupEvents() {
             setNacaValidity(true);
             if (val !== config.naca) {
                 config.naca = val;
+                syncHud();
                 updateObstacle();
             }
         } else {
@@ -256,6 +265,7 @@ function setupEvents() {
     ui.aoaSlider.addEventListener('input', (e) => {
         config.aoa = parseFloat(e.target.value);
         ui.aoaVal.textContent = `${config.aoa}°`;
+        syncHud();
         updateObstacle();
     });
 
@@ -285,18 +295,102 @@ function setupEvents() {
         resetParticles();
     });
 
-    ui.btnPause.addEventListener('click', () => {
-        config.isRunning = !config.isRunning;
-        ui.btnPause.textContent = config.isRunning ? 'Pause' : 'Resume';
-        ui.statusBadge.innerHTML = config.isRunning ? '<span class="dot"></span> Running' : '<span class="dot" style="background:#ff4a4a; animation:none"></span> Paused';
-    });
+    ui.btnPause.addEventListener('click', () => setRunning(!config.isRunning));
+    ui.hudPause.addEventListener('click', () => setRunning(!config.isRunning));
 
     ui.btnSweep.addEventListener('click', runSweep);
     ui.chartClose.addEventListener('click', () => ui.chartOverlay.classList.add('hidden'));
     ui.chartCanvas.addEventListener('pointermove', onChartHover);
     ui.chartCanvas.addEventListener('pointerleave', () => renderLiftCurve(-1));
 
+    document.addEventListener('keydown', onKeyDown);
     setupDrag();
+    syncHud();
+}
+
+// Play/pause in one place so the side button, the HUD chip and the spacebar
+// all stay in sync.
+function setRunning(state) {
+    config.isRunning = state;
+    ui.btnPause.textContent = state ? 'Pause' : 'Resume';
+    ui.hudPause.textContent = state ? '⏸ pause' : '▶ play';
+    ui.statusBadge.innerHTML = state
+        ? '<span class="dot"></span> Running'
+        : '<span class="dot" style="background:#ff4a4a; animation:none"></span> Paused';
+}
+
+// Advance the simulation exactly one step while paused (the reel's "N" key).
+function stepOnce() {
+    const uSpeed = (config.speed / 100) * 2.0;
+    fluid.step(config.dt, config.visc, 0.0, uSpeed);
+    if (config.vizMode === 'particles') updateParticles(config.dt);
+    if (config.vizMode === 'velocity-contour' || config.vizMode === 'velocity') updateStreak(config.dt);
+    calculateForces();
+}
+
+// Mirror the live tunnel state into the reel-style toolbar chips.
+function syncHud() {
+    ui.hudNaca.textContent = config.naca;
+    ui.hudNaca.style.display = config.objectType === 'airfoil' ? '' : 'none';
+    ui.hudAoa.textContent = config.objectType === 'airfoil'
+        ? `α ${config.aoa}°`
+        : `⟳ ${config.rotationSpeed}`;
+}
+
+function onKeyDown(e) {
+    // Don't hijack typing in the NACA box etc.
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+
+    switch (e.key) {
+        case ' ':
+            e.preventDefault();
+            setRunning(!config.isRunning);
+            break;
+        case 'n': case 'N':
+            if (!config.isRunning) { stepOnce(); }
+            break;
+        case 'r': case 'R':
+            fluid = new FluidGrid(config.nx, config.ny);
+            updateObstacle();
+            resetParticles();
+            break;
+        case 's': case 'S':
+            runSweep();
+            break;
+        case 'ArrowUp':
+            e.preventDefault();
+            setAoa(config.aoa + 1);
+            break;
+        case 'ArrowDown':
+            e.preventDefault();
+            setAoa(config.aoa - 1);
+            break;
+        case '1': case '2': case '3': case '4': case '5': {
+            const mode = VIZ_MODES[parseInt(e.key, 10) - 1];
+            if (mode) selectVizMode(mode);
+            break;
+        }
+    }
+}
+
+// Set AoA from code (keyboard) and keep the slider + chips in sync.
+function setAoa(deg) {
+    if (config.objectType !== 'airfoil') return;
+    config.aoa = clamp(deg, -20, 20);
+    ui.aoaSlider.value = config.aoa;
+    ui.aoaVal.textContent = `${config.aoa}°`;
+    syncHud();
+    updateObstacle();
+    syncURL();
+}
+
+// Switch visualization from code (keyboard) and tick the matching radio.
+function selectVizMode(mode) {
+    config.vizMode = mode;
+    ui.vizRadios.forEach(r => { r.checked = (r.value === mode); });
+    if (mode === 'particles') resetParticles();
+    syncURL();
 }
 
 /* ---------------------------------------------------------------------------
@@ -1150,6 +1244,65 @@ function drawForceVectors(cs) {
     ctx.restore();
 }
 
+// Representative lift-coefficient model: linear thin-airfoil slope tapered by
+// the same separation model the solver uses, so the mini plot shows the stall.
+function clModel(aoaDeg) {
+    const linear = 0.10 * aoaDeg;
+    return linear * (1 - 0.72 * separationFraction(aoaDeg));
+}
+
+function drawMiniLiftCurve() {
+    const w = ui.miniLift.width, h = ui.miniLift.height;
+    miniCtx.clearRect(0, 0, w, h);
+
+    if (config.objectType !== 'airfoil') {
+        miniCtx.fillStyle = 'rgba(200,208,220,0.6)';
+        miniCtx.font = '10px JetBrains Mono, monospace';
+        miniCtx.textAlign = 'center';
+        miniCtx.fillText('airfoil only', w / 2, h / 2);
+        return;
+    }
+
+    const x0 = 6, x1 = w - 6, y0 = 8, y1 = h - 13;
+    const aoaMin = -20, aoaMax = 20, clMax = 1.6;
+    const X = a => x0 + (a - aoaMin) / (aoaMax - aoaMin) * (x1 - x0);
+    const Y = cl => (y0 + y1) / 2 - cl / clMax * ((y1 - y0) / 2);
+
+    // Zero axes
+    miniCtx.strokeStyle = 'rgba(130,140,155,0.35)';
+    miniCtx.lineWidth = 1;
+    miniCtx.beginPath();
+    miniCtx.moveTo(x0, Y(0)); miniCtx.lineTo(x1, Y(0));
+    miniCtx.moveTo(X(0), y0); miniCtx.lineTo(X(0), y1);
+    miniCtx.stroke();
+
+    // Cl curve
+    miniCtx.strokeStyle = '#39e56b';
+    miniCtx.lineWidth = 1.8;
+    miniCtx.beginPath();
+    for (let a = aoaMin; a <= aoaMax; a += 0.5) {
+        const px = X(a), py = Y(clModel(a));
+        if (a === aoaMin) miniCtx.moveTo(px, py); else miniCtx.lineTo(px, py);
+    }
+    miniCtx.stroke();
+
+    // Live operating point
+    const cx = X(config.aoa), cy = Y(clModel(config.aoa));
+    miniCtx.fillStyle = '#fff';
+    miniCtx.beginPath(); miniCtx.arc(cx, cy, 3, 0, Math.PI * 2); miniCtx.fill();
+    miniCtx.strokeStyle = '#ff3ea5';
+    miniCtx.lineWidth = 1.4;
+    miniCtx.beginPath(); miniCtx.arc(cx, cy, 5.5, 0, Math.PI * 2); miniCtx.stroke();
+
+    // Axis labels
+    miniCtx.fillStyle = 'rgba(200,208,220,0.7)';
+    miniCtx.font = '9px JetBrains Mono, monospace';
+    miniCtx.textBaseline = 'alphabetic';
+    miniCtx.textAlign = 'left'; miniCtx.fillText('-20°', x0, h - 3);
+    miniCtx.textAlign = 'right'; miniCtx.fillText('+20°', x1, h - 3);
+    miniCtx.textAlign = 'center'; miniCtx.fillText(`α ${config.aoa}°`, X(0), h - 3);
+}
+
 function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const cs = config.cellSize;
@@ -1182,6 +1335,7 @@ function draw() {
 
     drawObjectOutline(cs);
     drawForceVectors(cs);
+    drawMiniLiftCurve();
 }
 
 /* ---------------------------------------------------------------------------

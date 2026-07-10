@@ -122,9 +122,10 @@ canvas {
 
 .canvas-overlay {
     position: absolute;
-    bottom: 1rem;
-    left: 1rem;
+    top: 2rem;
+    right: 1rem;
     pointer-events: none;
+    z-index: 4;
 }
 
 .data-readout {
@@ -154,6 +155,123 @@ canvas {
     font-size: 1.1rem;
     color: var(--accent);
     font-weight: 600;
+}
+
+/* ------------------------------------------------------------------ *
+ * Reel-style canvas chrome: title bar, toolbar chips, keyboard HUD
+ * and the live Cl-vs-AoA mini plot.
+ * ------------------------------------------------------------------ */
+.tunnel-titlebar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    text-align: center;
+    padding: 0.3rem 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.02em;
+    color: rgba(230, 235, 245, 0.75);
+    background: linear-gradient(rgba(10, 12, 16, 0.78), rgba(10, 12, 16, 0));
+    pointer-events: none;
+    z-index: 4;
+}
+
+.tunnel-toolbar {
+    position: absolute;
+    top: 2rem;
+    left: 0.75rem;
+    display: flex;
+    gap: 0.35rem;
+    align-items: center;
+    z-index: 4;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.chip {
+    font-size: 0.72rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 5px;
+    background: rgba(16, 18, 24, 0.82);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    backdrop-filter: blur(8px);
+    line-height: 1.2;
+}
+
+.chip-key {
+    color: rgba(180, 190, 205, 0.85);
+    background: rgba(30, 33, 42, 0.85);
+}
+
+.chip-val {
+    color: var(--accent);
+}
+
+.chip-btn {
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.chip-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+
+.tunnel-hud {
+    position: absolute;
+    bottom: 0.9rem;
+    left: 1rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    line-height: 1.55;
+    color: rgba(210, 218, 230, 0.72);
+    background: rgba(10, 12, 16, 0.55);
+    backdrop-filter: blur(6px);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 0.55rem 0.8rem;
+    pointer-events: none;
+    z-index: 4;
+}
+
+.tunnel-hud div {
+    display: flex;
+    gap: 0.6rem;
+}
+
+.tunnel-hud b {
+    color: rgba(150, 220, 255, 0.95);
+    min-width: 3.2em;
+    font-weight: 600;
+}
+
+.mini-curve {
+    position: absolute;
+    bottom: 0.9rem;
+    right: 1rem;
+    background: rgba(10, 12, 16, 0.62);
+    backdrop-filter: blur(6px);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 0.45rem 0.55rem 0.35rem;
+    pointer-events: none;
+    z-index: 4;
+}
+
+.mini-curve-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.66rem;
+    letter-spacing: 0.05em;
+    color: rgba(150, 220, 255, 0.85);
+    margin-bottom: 0.3rem;
+}
+
+#mini-lift {
+    display: block;
+    width: 300px;
+    max-width: 42vw;
+    height: auto;
 }
 
 /* Lift-curve chart overlay */
