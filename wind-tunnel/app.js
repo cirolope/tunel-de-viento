@@ -831,45 +831,109 @@ function renderPressureField(data) {
     }
 }
 
-function drawVelocityVectors(cs) {
-    const vScale = 15; // Scale multiplier for the vector lines
+/* ---------------------------------------------------------------------------
+ * Streamlines
+ *
+ * Lines that follow the flow, integrated through the velocity field from a rake
+ * of seed points. Unlike a grid of little arrows, they show the *story* of the
+ * flow: where it splits at the leading-edge stagnation point, how it speeds up
+ * over the top (lines crowd together), and where it separates and rolls into
+ * vortices in the wake. Each segment is coloured by local speed with the same
+ * Turbo map as the flow view, and small chevrons mark the direction.
+ * ------------------------------------------------------------------------- */
 
-    for (let j = 1; j < fluid.ny; j += 2) {
-        for (let i = 1; i < fluid.nx; i += 2) {
-            if (fluid.s[fluid.IX(i, j)] === 1) continue;
+function drawArrowHead(px, py, dx, dy, color, size) {
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;   // travel direction
+    const wx = -uy, wy = ux;              // perpendicular
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(px + ux * size, py + uy * size);
+    ctx.lineTo(px - ux * size * 0.4 + wx * size * 0.7, py - uy * size * 0.4 + wy * size * 0.7);
+    ctx.lineTo(px - ux * size * 0.4 - wx * size * 0.7, py - uy * size * 0.4 - wy * size * 0.7);
+    ctx.closePath();
+    ctx.fill();
+}
 
-            let u = fluid.u[fluid.IX(i, j)];
-            let v = fluid.v[fluid.IX(i, j)];
-            let mag = Math.sqrt(u * u + v * v);
+// Integrate and draw one streamline from (x, y) in grid coords, RK2 with a
+// fixed arc-length step so spacing stays even regardless of local speed.
+function traceStreamline(x, y, h, maxSteps, ref, cs) {
+    const nx = config.nx, ny = config.ny;
+    let stepsSinceArrow = (Math.random() * 12) | 0; // stagger arrows between lines
 
-            // Skip very small velocities to avoid clutter
-            if (mag < 0.1) continue;
+    for (let n = 0; n < maxSteps; n++) {
+        const v1 = sampleVelocity(x, y);
+        const s1 = Math.hypot(v1.u, v1.v);
+        if (s1 < 1e-4) break;                       // hit stagnation
+        const mx = x + (v1.u / s1) * h * 0.5;
+        const my = y + (v1.v / s1) * h * 0.5;
+        if (mx < 0.6 || mx > nx - 1.6 || my < 0.6 || my > ny - 1.6) break;
 
-            let cx = i * cs + cs / 2;
-            let cy = j * cs + cs / 2;
+        const v2 = sampleVelocity(mx, my);
+        const s2 = Math.hypot(v2.u, v2.v);
+        if (s2 < 1e-4) break;
+        const dx = (v2.u / s2) * h;
+        const dy = (v2.v / s2) * h;
 
-            // Color based on magnitude (fast = bright cyan, slow = dark green/blue)
-            let alpha = Math.min(1.0, mag / 2.0);
-            let hue = 180 - Math.min(60, mag * 20); // shifts from Cyan (180) to Green (120) as it speeds up
-            ctx.strokeStyle = `hsla(${hue}, 100%, 60%, ${alpha})`;
-            ctx.fillStyle = ctx.strokeStyle;
-            ctx.lineWidth = 1.5;
+        const x2 = x + dx;
+        const y2 = y + dy;
+        if (x2 < 0.6 || x2 > nx - 1.6 || y2 < 0.6 || y2 > ny - 1.6) break;
+        if (fluid.s[fluid.IX(Math.round(x2), Math.round(y2))] === 1) break;
 
-            let endX = cx + u * vScale;
-            let endY = cy + v * vScale;
+        const t = Math.min(1, s2 / ref);
+        const c = turboColor(t);
+        const col = `rgb(${c[0] | 0}, ${c[1] | 0}, ${c[2] | 0})`;
+        ctx.strokeStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(x * cs, y * cs);
+        ctx.lineTo(x2 * cs, y2 * cs);
+        ctx.stroke();
 
-            ctx.beginPath();
-            // Draw the line
-            ctx.moveTo(cx, cy);
-            ctx.lineTo(endX, endY);
-            ctx.stroke();
-
-            // Draw a small dot at the head to indicate direction
-            ctx.beginPath();
-            ctx.arc(endX, endY, 1.5, 0, Math.PI * 2);
-            ctx.fill();
+        if (++stepsSinceArrow >= 16) {
+            stepsSinceArrow = 0;
+            drawArrowHead(x2 * cs, y2 * cs, dx, dy, col, 4.5);
         }
+
+        x = x2; y = y2;
     }
+}
+
+function drawStreamlines(cs) {
+    const nx = config.nx, ny = config.ny;
+    const ref = contourReference();
+
+    // Dim Turbo heatmap backdrop: keeps the fast/slow context (red suction
+    // peak, blue wake) without competing with the lines drawn on top.
+    ensureFieldBuffer();
+    renderContourField(fieldImage.data, ref);
+    fieldCtx.putImageData(fieldImage, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalAlpha = 0.30;
+    ctx.drawImage(fieldCanvas, 0, 0, nx * cs, ny * cs);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(6, 8, 12, 0.32)';
+    ctx.fillRect(0, 0, nx * cs, ny * cs);
+
+    const h = 0.6;                              // step length in cells
+    const maxSteps = (nx * 2.5) | 0;
+    ctx.lineWidth = 1.35;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+    ctx.shadowBlur = 2;
+
+    // Primary rake at the inlet: shows how the whole stream parts around the body
+    const inletSeeds = Math.min(48, Math.max(20, (ny / 1.5) | 0));
+    for (let s = 0; s < inletSeeds; s++) {
+        traceStreamline(1.6, ny * (s + 0.5) / inletSeeds, h, maxSteps, ref, cs);
+    }
+    // Secondary sparse rake downstream so recirculation in the wake gets traced
+    // (upstream lines don't always penetrate a separation bubble).
+    for (let s = 0; s < 10; s++) {
+        traceStreamline(nx * 0.62, ny * (s + 0.5) / 10, h, (nx * 1.2) | 0, ref, cs);
+    }
+
+    ctx.shadowBlur = 0;
 }
 
 function drawContourLegend(maxV) {
@@ -943,7 +1007,7 @@ function draw() {
     const cs = config.cellSize;
 
     if (config.vizMode === 'velocity') {
-        drawVelocityVectors(cs);
+        drawStreamlines(cs);
     } else if (config.vizMode === 'particles') {
         drawParticles(cs);
     } else {
