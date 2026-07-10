@@ -586,7 +586,13 @@ function loop(now) {
             steps++;
         }
         if (timeAccumulator > SIM_STEP) timeAccumulator = SIM_STEP;
-        if (steps > 0) calculateForces();
+        if (steps > 0) {
+            calculateForces();
+            // Drift the flow texture only for the views that use it
+            if (config.vizMode === 'velocity-contour' || config.vizMode === 'velocity') {
+                updateStreak(config.dt * Math.min(steps, 2));
+            }
+        }
     } else {
         timeAccumulator = 0;
     }
@@ -768,28 +774,124 @@ function freestreamSpeed() {
 // yellow→red, and stagnation / wake fall to blue — the stable reading a real
 // tunnel view gives.
 function contourReference() {
-    return freestreamSpeed() * 2.2;
+    // Lower multiple than a plain "2x freestream" so the suction peak over the
+    // airfoil saturates to red (as in the reference reel) while the undisturbed
+    // stream still sits green and the wake falls to deep blue.
+    return freestreamSpeed() * 2.05;
 }
 
-function renderContourField(data, maxV) {
-    const vScale = 1.0 / maxV;
-    const streak = fluid.streak;
-    for (let idx = 0; idx < fluid.numCells; idx++) {
-        if (fluid.s[idx] === 1) {
-            setCell(data, idx, OBSTACLE_RGB[0], OBSTACLE_RGB[1], OBSTACLE_RGB[2]);
-            continue;
+/* ---------------------------------------------------------------------------
+ * High-resolution flow texture (the "silky fibres" look)
+ *
+ * The velocity view is rendered on a grid SS times finer than the physics grid.
+ * A noise field is advected through the (bilinearly sampled) velocity, which
+ * stretches it into fine hair-like streaklines aligned with the flow — a cheap
+ * Line-Integral-Convolution. The Turbo colour comes from the same interpolated
+ * velocity, so colour stays smooth while the fibres stay crisp.
+ * ------------------------------------------------------------------------- */
+
+const SS = 2;                 // texture supersampling factor
+const INJECT = 0.10;          // fraction of fresh noise blended in per frame (IBFV)
+const hiCanvas = document.createElement('canvas');
+const hiCtx = hiCanvas.getContext('2d');
+let hiImage = null;
+let sx = 0, sy = 0;           // hi-res texture dimensions
+let streak = null, streak0 = null;
+
+function ensureHiRes() {
+    const w = config.nx * SS, h = config.ny * SS;
+    if (sx === w && sy === h && streak) return;
+    sx = w; sy = h;
+    streak = new Float32Array(sx * sy);
+    streak0 = new Float32Array(sx * sy);
+    for (let k = 0; k < streak.length; k++) streak[k] = Math.random();
+    hiCanvas.width = sx;
+    hiCanvas.height = sy;
+    hiImage = hiCtx.createImageData(sx, sy);
+}
+
+// Advect the fine noise through the flow (semi-Lagrangian) and re-seed, so the
+// fibres continually stream in instead of smearing to grey.
+function updateStreak(dtEff) {
+    ensureHiRes();
+    const nx = config.nx, ny = config.ny, u = fluid.u, v = fluid.v;
+    const dt0x = dtEff * (nx - 2) * SS;
+    const dt0y = dtEff * (ny - 2) * SS;
+    streak0.set(streak);
+
+    for (let J = 0; J < sy; J++) {
+        const y = J / SS;
+        let j0 = y | 0; if (j0 > ny - 2) j0 = ny - 2;
+        const ty = y - j0, ty0 = 1 - ty, row = j0 * nx;
+        for (let I = 0; I < sx; I++) {
+            const x = I / SS;
+            let i0 = x | 0; if (i0 > nx - 2) i0 = nx - 2;
+            const tx = x - i0, tx0 = 1 - tx, a = row + i0;
+            const uu = tx0 * (ty0 * u[a] + ty * u[a + nx]) + tx * (ty0 * u[a + 1] + ty * u[a + nx + 1]);
+            const vv = tx0 * (ty0 * v[a] + ty * v[a + nx]) + tx * (ty0 * v[a + 1] + ty * v[a + nx + 1]);
+
+            let sI = I - uu * dt0x;
+            let sJ = J - vv * dt0y;
+            if (sI < 0) sI = 0; else if (sI > sx - 1) sI = sx - 1;
+            if (sJ < 0) sJ = 0; else if (sJ > sy - 1) sJ = sy - 1;
+            const bi = sI | 0, bj = sJ | 0;
+            const fx = sI - bi, fx0 = 1 - fx, fy = sJ - bj, fy0 = 1 - fy;
+            const dI = bi < sx - 1 ? 1 : 0, dJ = bj < sy - 1 ? sx : 0, p = bj * sx + bi;
+            const adv =
+                fx0 * (fy0 * streak0[p] + fy * streak0[p + dJ]) +
+                fx * (fy0 * streak0[p + dI] + fy * streak0[p + dI + dJ]);
+            // Image-Based Flow Visualization (van Wijk 2002): blend a little
+            // fresh noise into every pixel each frame. The advection then draws
+            // that noise into long silky filaments, while the constant refresh
+            // avoids the moiré banding that pure re-advection produces in uniform
+            // flow.
+            streak[J * sx + I] = adv * (1 - INJECT) + Math.random() * INJECT;
         }
-        const u = fluid.u[idx];
-        const v = fluid.v[idx];
-        const mag = Math.sqrt(u * u + v * v);
-        const t = Math.min(1.0, mag * vScale);
-        const c = turboColor(t);
-        // Modulate brightness by the advected noise to draw the flowing fibres.
-        // Values can overshoot 255 for bright filament highlights; the
-        // Uint8ClampedArray backing the ImageData clamps them for free.
-        const shade = 0.55 + 0.75 * streak[idx];
-        setCell(data, idx, c[0] * shade, c[1] * shade, c[2] * shade);
     }
+
+    // Crisp fresh threads right at the inlet so filaments are born sharp
+    for (let J = 0; J < sy; J++) {
+        const base = J * sx;
+        for (let I = 0; I < SS * 2; I++) streak[base + I] = Math.random();
+    }
+}
+
+function renderVelocityHiRes(ref) {
+    ensureHiRes();
+    const data = hiImage.data;
+    const nx = config.nx, ny = config.ny, s = fluid.s, u = fluid.u, v = fluid.v;
+    const inv = 1 / ref;
+
+    for (let J = 0; J < sy; J++) {
+        const y = J / SS;
+        let j0 = y | 0; if (j0 > ny - 2) j0 = ny - 2;
+        const ty = y - j0, ty0 = 1 - ty, row = j0 * nx;
+        for (let I = 0; I < sx; I++) {
+            const x = I / SS;
+            let i0 = x | 0; if (i0 > nx - 2) i0 = nx - 2;
+            const tx = x - i0, tx0 = 1 - tx, a = row + i0;
+            const p4 = (J * sx + I) * 4;
+
+            // Solid body: only when the whole sampling cell is obstacle, so the
+            // white outline drawn later gets a crisp dark backing.
+            if (s[a] === 1 && s[a + 1] === 1 && s[a + nx] === 1 && s[a + nx + 1] === 1) {
+                data[p4] = OBSTACLE_RGB[0]; data[p4 + 1] = OBSTACLE_RGB[1];
+                data[p4 + 2] = OBSTACLE_RGB[2]; data[p4 + 3] = 255;
+                continue;
+            }
+            const uu = tx0 * (ty0 * u[a] + ty * u[a + nx]) + tx * (ty0 * u[a + 1] + ty * u[a + nx + 1]);
+            const vv = tx0 * (ty0 * v[a] + ty * v[a + nx]) + tx * (ty0 * v[a + 1] + ty * v[a + nx + 1]);
+            const mag = Math.sqrt(uu * uu + vv * vv);
+            let t = mag * inv; if (t > 1) t = 1;
+            const c = turboColor(t);
+            const shade = 0.45 + 0.95 * streak[J * sx + I];
+            data[p4] = c[0] * shade;
+            data[p4 + 1] = c[1] * shade;
+            data[p4 + 2] = c[2] * shade;
+            data[p4 + 3] = 255;
+        }
+    }
+    hiCtx.putImageData(hiImage, 0, 0);
 }
 
 function renderPressureField(data) {
@@ -904,12 +1006,10 @@ function drawStreamlines(cs) {
 
     // Dim Turbo heatmap backdrop: keeps the fast/slow context (red suction
     // peak, blue wake) without competing with the lines drawn on top.
-    ensureFieldBuffer();
-    renderContourField(fieldImage.data, ref);
-    fieldCtx.putImageData(fieldImage, 0, 0);
+    renderVelocityHiRes(ref);
     ctx.imageSmoothingEnabled = true;
     ctx.globalAlpha = 0.30;
-    ctx.drawImage(fieldCanvas, 0, 0, nx * cs, ny * cs);
+    ctx.drawImage(hiCanvas, 0, 0, nx * cs, ny * cs);
     ctx.globalAlpha = 1;
     ctx.fillStyle = 'rgba(6, 8, 12, 0.32)';
     ctx.fillRect(0, 0, nx * cs, ny * cs);
@@ -1002,6 +1102,54 @@ function drawObjectOutline(cs) {
     ctx.restore();
 }
 
+// Straight arrow with a filled head, using the streamline arrowhead helper.
+function drawArrow(x0, y0, x1, y1, color, width) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+    const dx = x1 - x0, dy = y1 - y0;
+    if (dx * dx + dy * dy > 9) drawArrowHead(x1, y1, dx, dy, color, Math.max(5, width * 2.2));
+}
+
+// Force diagram anchored on the body, echoing the reel: a yellow move-handle at
+// the pivot, an orange drag arrow (streamwise), a green lift arrow (normal), and
+// the magenta resultant. Lengths track the live force readout, so you watch the
+// resultant swing forward and collapse as the wing approaches stall.
+function drawForceVectors(cs) {
+    if (config.objectType !== 'airfoil' || airfoilBoundary.length === 0) return;
+
+    const cx = config.nx * config.objXFrac * cs;
+    const cy = config.ny * config.objYFrac * cs;
+    const k = 80;                                   // px per unit of force
+    const maxLen = config.nx * 0.22 * cs * 1.5;     // clamp to ~1.5 chords
+    const clampLen = (v) => Math.max(-maxLen, Math.min(maxLen, v));
+    const up = clampLen(forces.lift * k);           // lift → upward (−y)
+    const right = clampLen(forces.drag * k);        // drag → downstream (+x)
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+    ctx.shadowBlur = 3;
+
+    drawArrow(cx, cy, cx + right, cy, '#ff9a3c', 2.5);          // drag (orange)
+    drawArrow(cx, cy, cx, cy - up, '#39e56b', 2.5);            // lift (green)
+    drawArrow(cx, cy, cx + right, cy - up, '#ff3ea5', 3);      // resultant (magenta)
+
+    ctx.shadowBlur = 0;
+    const hs = 6;                                              // yellow handle
+    ctx.strokeStyle = '#ffd23c';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(cx - hs, cy - hs, hs * 2, hs * 2);
+    ctx.beginPath();
+    ctx.moveTo(cx - hs, cy); ctx.lineTo(cx + hs, cy);
+    ctx.moveTo(cx, cy - hs); ctx.lineTo(cx, cy + hs);
+    ctx.stroke();
+    ctx.restore();
+}
+
 function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const cs = config.cellSize;
@@ -1010,16 +1158,19 @@ function draw() {
         drawStreamlines(cs);
     } else if (config.vizMode === 'particles') {
         drawParticles(cs);
+    } else if (config.vizMode === 'velocity-contour') {
+        // Silky high-resolution flow view (the reel look)
+        const ref = contourReference();
+        renderVelocityHiRes(ref);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(hiCanvas, 0, 0, config.nx * cs, config.ny * cs);
+        drawContourLegend(ref);
     } else {
         ensureFieldBuffer();
         const data = fieldImage.data;
-        let maxV = 0;
 
         if (config.vizMode === 'dye') {
             renderDyeField(data);
-        } else if (config.vizMode === 'velocity-contour') {
-            maxV = contourReference();
-            renderContourField(data, maxV);
         } else if (config.vizMode === 'pressure') {
             renderPressureField(data);
         }
@@ -1027,13 +1178,10 @@ function draw() {
         fieldCtx.putImageData(fieldImage, 0, 0);
         ctx.imageSmoothingEnabled = true;
         ctx.drawImage(fieldCanvas, 0, 0, config.nx * cs, config.ny * cs);
-
-        if (config.vizMode === 'velocity-contour') {
-            drawContourLegend(maxV);
-        }
     }
 
     drawObjectOutline(cs);
+    drawForceVectors(cs);
 }
 
 /* ---------------------------------------------------------------------------
