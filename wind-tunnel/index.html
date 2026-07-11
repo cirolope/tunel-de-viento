@@ -6,8 +6,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aerodynamic Wind Tunnel Simulator</title>
     <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=JetBrains+Mono:wght@400&display=swap"
+        href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
         rel="stylesheet">
 </head>
 
@@ -51,8 +53,8 @@
 
             <aside class="controls-panel">
                 <div class="control-group">
-                    <h2>Object Properties</h2>
-                    <div class="control-row custom-radio">
+                    <h2>Model</h2>
+                    <div class="control-row seg">
                         <label class="radio-label">
                             <input type="radio" name="object-type" value="airfoil" checked>
                             <span class="radio-custom">Airfoil</span>
@@ -65,40 +67,40 @@
                 </div>
 
                 <div class="control-group" id="group-airfoil">
-                    <h2>Airfoil Properties</h2>
+                    <h2>Airfoil</h2>
                     <div class="control-row">
-                        <label for="naca-input">NACA Profile (4-digit)</label>
+                        <label for="naca-input">NACA profile (4-digit)</label>
                         <input type="text" id="naca-input" value="2412" maxlength="4" pattern="[0-9]{4}"
                             inputmode="numeric" aria-describedby="naca-error">
                         <span class="input-error hidden" id="naca-error" role="alert">Enter 4 digits, e.g. 2412</span>
                     </div>
                     <div class="control-row">
-                        <label for="aoa-slider">Angle of Attack: <span id="aoa-val" class="highlight">0°</span></label>
+                        <label for="aoa-slider">Angle of attack <span id="aoa-val" class="highlight">0°</span></label>
                         <input type="range" id="aoa-slider" min="-20" max="20" value="0" step="1">
                     </div>
                     <div class="control-row">
-                        <button id="btn-sweep" class="btn secondary">Sweep AoA ▸ Lift curve</button>
+                        <button id="btn-sweep" class="btn secondary">Plot lift curve</button>
                     </div>
                 </div>
 
                 <div class="control-group hidden" id="group-cylinder">
-                    <h2>Cylinder Properties</h2>
+                    <h2>Cylinder</h2>
                     <div class="control-row">
-                        <label for="rotation-slider">Rotation Speed: <span id="rotation-val"
+                        <label for="rotation-slider">Rotation speed <span id="rotation-val"
                                 class="highlight">0</span></label>
                         <input type="range" id="rotation-slider" min="-100" max="100" value="0" step="1">
                     </div>
                 </div>
 
                 <div class="control-group">
-                    <h2>Fluid Dynamics</h2>
+                    <h2>Flow</h2>
                     <div class="control-row">
-                        <label for="speed-slider">Flow Speed: <span class="highlight"><span id="speed-val">20</span>
+                        <label for="speed-slider">Flow speed <span class="highlight"><span id="speed-val">20</span>
                                 m/s</span></label>
                         <input type="range" id="speed-slider" min="0" max="100" value="20">
                     </div>
                     <div class="control-row">
-                        <label for="viscosity-select">Fluid Viscosity:</label>
+                        <label for="viscosity-select">Fluid</label>
                         <select id="viscosity-select" class="custom-select">
                             <option value="0.0000010">Water (20°C)</option>
                             <option value="0.0000150" selected>Air (20°C)</option>
@@ -111,14 +113,14 @@
 
                 <div class="control-group">
                     <h2>Visualization</h2>
-                    <div class="control-row custom-radio">
+                    <div class="control-row chips">
                         <label class="radio-label">
                             <input type="radio" name="viz-mode" value="velocity-contour" checked>
-                            <span class="radio-custom">Flow (velocity)</span>
+                            <span class="radio-custom">Flow field</span>
                         </label>
                         <label class="radio-label">
                             <input type="radio" name="viz-mode" value="dye">
-                            <span class="radio-custom">Smoke / Dye</span>
+                            <span class="radio-custom">Smoke</span>
                         </label>
                         <label class="radio-label">
                             <input type="radio" name="viz-mode" value="particles">
@@ -126,17 +128,18 @@
                         </label>
                         <label class="radio-label">
                             <input type="radio" name="viz-mode" value="velocity">
-                            <span class="radio-custom">Velocity Field</span>
+                            <span class="radio-custom">Vectors</span>
                         </label>
                         <label class="radio-label">
                             <input type="radio" name="viz-mode" value="pressure">
-                            <span class="radio-custom">Pressure Map</span>
+                            <span class="radio-custom">Pressure</span>
                         </label>
                     </div>
-                    <div class="control-row action-row">
-                        <button id="btn-reset" class="btn secondary">Reset Flow</button>
-                        <button id="btn-pause" class="btn primary">Pause</button>
-                    </div>
+                </div>
+
+                <div class="panel-footer">
+                    <button id="btn-reset" class="btn secondary">Reset flow</button>
+                    <button id="btn-pause" class="btn primary">Pause</button>
                 </div>
             </aside>
         </main>

@@ -288,7 +288,8 @@ function setupEvents() {
     ui.btnPause.addEventListener('click', () => {
         config.isRunning = !config.isRunning;
         ui.btnPause.textContent = config.isRunning ? 'Pause' : 'Resume';
-        ui.statusBadge.innerHTML = config.isRunning ? '<span class="dot"></span> Running' : '<span class="dot" style="background:#ff4a4a; animation:none"></span> Paused';
+        ui.statusBadge.classList.toggle('paused', !config.isRunning);
+        ui.statusBadge.innerHTML = `<span class="dot"></span> ${config.isRunning ? 'Running' : 'Paused'}`;
     });
 
     ui.btnSweep.addEventListener('click', runSweep);
@@ -991,12 +992,12 @@ const SWEEP_AVG = 40;    // steps averaged for the measurement
 const CHART = {
     lift: '#3987e5',   // validated categorical slot (see dataviz palette)
     drag: '#d95926',
-    grid: '#2c2c2a',
-    axis: '#4a4a47',
-    zero: '#6a6a66',
-    ink: '#f0f0f5',
-    muted: '#898781',
-    surface: '#101116'
+    grid: '#22252b',
+    axis: '#3d424b',
+    zero: '#5c626c',
+    ink: '#e8eaee',
+    muted: '#9aa3ad',
+    surface: '#111318'
 };
 
 function nextFrame() {
