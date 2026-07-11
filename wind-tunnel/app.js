@@ -53,8 +53,14 @@ const ui = {
     chartClose: document.getElementById('chart-close'),
     chartCanvas: document.getElementById('lift-chart'),
     chartNote: document.getElementById('chart-note'),
-    sweepStatus: document.getElementById('sweep-status')
+    sweepStatus: document.getElementById('sweep-status'),
+    hudPause: document.getElementById('hud-pause'),
+    hudNaca: document.getElementById('hud-naca'),
+    hudAoa: document.getElementById('hud-aoa'),
+    miniLift: document.getElementById('mini-lift')
 };
+
+const miniCtx = ui.miniLift.getContext('2d');
 
 // Reynolds number for a reference chord of 1 m, with the speed slider read
 // as airspeed in m/s and the select as kinematic viscosity in m²/s.
@@ -218,6 +224,7 @@ function setupEvents() {
                     ui.groupAirfoil.classList.add('hidden');
                     ui.groupCylinder.classList.remove('hidden');
                 }
+                syncHud();
                 updateObstacle();
             }
         });
@@ -226,6 +233,7 @@ function setupEvents() {
     ui.rotationSlider.addEventListener('input', (e) => {
         config.rotationSpeed = parseInt(e.target.value);
         ui.rotationVal.textContent = config.rotationSpeed;
+        syncHud();
         if (config.objectType === 'cylinder') updateObstacle();
     });
 
@@ -240,6 +248,7 @@ function setupEvents() {
             setNacaValidity(true);
             if (val !== config.naca) {
                 config.naca = val;
+                syncHud();
                 updateObstacle();
             }
         } else {
@@ -256,6 +265,7 @@ function setupEvents() {
     ui.aoaSlider.addEventListener('input', (e) => {
         config.aoa = parseFloat(e.target.value);
         ui.aoaVal.textContent = `${config.aoa}°`;
+        syncHud();
         updateObstacle();
     });
 
@@ -285,18 +295,102 @@ function setupEvents() {
         resetParticles();
     });
 
-    ui.btnPause.addEventListener('click', () => {
-        config.isRunning = !config.isRunning;
-        ui.btnPause.textContent = config.isRunning ? 'Pause' : 'Resume';
-        ui.statusBadge.innerHTML = config.isRunning ? '<span class="dot"></span> Running' : '<span class="dot" style="background:#ff4a4a; animation:none"></span> Paused';
-    });
+    ui.btnPause.addEventListener('click', () => setRunning(!config.isRunning));
+    ui.hudPause.addEventListener('click', () => setRunning(!config.isRunning));
 
     ui.btnSweep.addEventListener('click', runSweep);
     ui.chartClose.addEventListener('click', () => ui.chartOverlay.classList.add('hidden'));
     ui.chartCanvas.addEventListener('pointermove', onChartHover);
     ui.chartCanvas.addEventListener('pointerleave', () => renderLiftCurve(-1));
 
+    document.addEventListener('keydown', onKeyDown);
     setupDrag();
+    syncHud();
+}
+
+// Play/pause in one place so the side button, the HUD chip and the spacebar
+// all stay in sync.
+function setRunning(state) {
+    config.isRunning = state;
+    ui.btnPause.textContent = state ? 'Pause' : 'Resume';
+    ui.hudPause.textContent = state ? '⏸ pause' : '▶ play';
+    ui.statusBadge.innerHTML = state
+        ? '<span class="dot"></span> Running'
+        : '<span class="dot" style="background:#ff4a4a; animation:none"></span> Paused';
+}
+
+// Advance the simulation exactly one step while paused (the reel's "N" key).
+function stepOnce() {
+    const uSpeed = (config.speed / 100) * 2.0;
+    fluid.step(config.dt, config.visc, 0.0, uSpeed);
+    if (config.vizMode === 'particles') updateParticles(config.dt);
+    if (config.vizMode === 'velocity-contour' || config.vizMode === 'velocity') updateStreak(config.dt);
+    calculateForces();
+}
+
+// Mirror the live tunnel state into the reel-style toolbar chips.
+function syncHud() {
+    ui.hudNaca.textContent = config.naca;
+    ui.hudNaca.style.display = config.objectType === 'airfoil' ? '' : 'none';
+    ui.hudAoa.textContent = config.objectType === 'airfoil'
+        ? `α ${config.aoa}°`
+        : `⟳ ${config.rotationSpeed}`;
+}
+
+function onKeyDown(e) {
+    // Don't hijack typing in the NACA box etc.
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+
+    switch (e.key) {
+        case ' ':
+            e.preventDefault();
+            setRunning(!config.isRunning);
+            break;
+        case 'n': case 'N':
+            if (!config.isRunning) { stepOnce(); }
+            break;
+        case 'r': case 'R':
+            fluid = new FluidGrid(config.nx, config.ny);
+            updateObstacle();
+            resetParticles();
+            break;
+        case 's': case 'S':
+            runSweep();
+            break;
+        case 'ArrowUp':
+            e.preventDefault();
+            setAoa(config.aoa + 1);
+            break;
+        case 'ArrowDown':
+            e.preventDefault();
+            setAoa(config.aoa - 1);
+            break;
+        case '1': case '2': case '3': case '4': case '5': {
+            const mode = VIZ_MODES[parseInt(e.key, 10) - 1];
+            if (mode) selectVizMode(mode);
+            break;
+        }
+    }
+}
+
+// Set AoA from code (keyboard) and keep the slider + chips in sync.
+function setAoa(deg) {
+    if (config.objectType !== 'airfoil') return;
+    config.aoa = clamp(deg, -20, 20);
+    ui.aoaSlider.value = config.aoa;
+    ui.aoaVal.textContent = `${config.aoa}°`;
+    syncHud();
+    updateObstacle();
+    syncURL();
+}
+
+// Switch visualization from code (keyboard) and tick the matching radio.
+function selectVizMode(mode) {
+    config.vizMode = mode;
+    ui.vizRadios.forEach(r => { r.checked = (r.value === mode); });
+    if (mode === 'particles') resetParticles();
+    syncURL();
 }
 
 /* ---------------------------------------------------------------------------
@@ -586,7 +680,13 @@ function loop(now) {
             steps++;
         }
         if (timeAccumulator > SIM_STEP) timeAccumulator = SIM_STEP;
-        if (steps > 0) calculateForces();
+        if (steps > 0) {
+            calculateForces();
+            // Drift the flow texture only for the views that use it
+            if (config.vizMode === 'velocity-contour' || config.vizMode === 'velocity') {
+                updateStreak(config.dt * Math.min(steps, 2));
+            }
+        }
     } else {
         timeAccumulator = 0;
     }
@@ -768,28 +868,124 @@ function freestreamSpeed() {
 // yellow→red, and stagnation / wake fall to blue — the stable reading a real
 // tunnel view gives.
 function contourReference() {
-    return freestreamSpeed() * 2.2;
+    // Lower multiple than a plain "2x freestream" so the suction peak over the
+    // airfoil saturates to red (as in the reference reel) while the undisturbed
+    // stream still sits green and the wake falls to deep blue.
+    return freestreamSpeed() * 2.05;
 }
 
-function renderContourField(data, maxV) {
-    const vScale = 1.0 / maxV;
-    const streak = fluid.streak;
-    for (let idx = 0; idx < fluid.numCells; idx++) {
-        if (fluid.s[idx] === 1) {
-            setCell(data, idx, OBSTACLE_RGB[0], OBSTACLE_RGB[1], OBSTACLE_RGB[2]);
-            continue;
+/* ---------------------------------------------------------------------------
+ * High-resolution flow texture (the "silky fibres" look)
+ *
+ * The velocity view is rendered on a grid SS times finer than the physics grid.
+ * A noise field is advected through the (bilinearly sampled) velocity, which
+ * stretches it into fine hair-like streaklines aligned with the flow — a cheap
+ * Line-Integral-Convolution. The Turbo colour comes from the same interpolated
+ * velocity, so colour stays smooth while the fibres stay crisp.
+ * ------------------------------------------------------------------------- */
+
+const SS = 2;                 // texture supersampling factor
+const INJECT = 0.10;          // fraction of fresh noise blended in per frame (IBFV)
+const hiCanvas = document.createElement('canvas');
+const hiCtx = hiCanvas.getContext('2d');
+let hiImage = null;
+let sx = 0, sy = 0;           // hi-res texture dimensions
+let streak = null, streak0 = null;
+
+function ensureHiRes() {
+    const w = config.nx * SS, h = config.ny * SS;
+    if (sx === w && sy === h && streak) return;
+    sx = w; sy = h;
+    streak = new Float32Array(sx * sy);
+    streak0 = new Float32Array(sx * sy);
+    for (let k = 0; k < streak.length; k++) streak[k] = Math.random();
+    hiCanvas.width = sx;
+    hiCanvas.height = sy;
+    hiImage = hiCtx.createImageData(sx, sy);
+}
+
+// Advect the fine noise through the flow (semi-Lagrangian) and re-seed, so the
+// fibres continually stream in instead of smearing to grey.
+function updateStreak(dtEff) {
+    ensureHiRes();
+    const nx = config.nx, ny = config.ny, u = fluid.u, v = fluid.v;
+    const dt0x = dtEff * (nx - 2) * SS;
+    const dt0y = dtEff * (ny - 2) * SS;
+    streak0.set(streak);
+
+    for (let J = 0; J < sy; J++) {
+        const y = J / SS;
+        let j0 = y | 0; if (j0 > ny - 2) j0 = ny - 2;
+        const ty = y - j0, ty0 = 1 - ty, row = j0 * nx;
+        for (let I = 0; I < sx; I++) {
+            const x = I / SS;
+            let i0 = x | 0; if (i0 > nx - 2) i0 = nx - 2;
+            const tx = x - i0, tx0 = 1 - tx, a = row + i0;
+            const uu = tx0 * (ty0 * u[a] + ty * u[a + nx]) + tx * (ty0 * u[a + 1] + ty * u[a + nx + 1]);
+            const vv = tx0 * (ty0 * v[a] + ty * v[a + nx]) + tx * (ty0 * v[a + 1] + ty * v[a + nx + 1]);
+
+            let sI = I - uu * dt0x;
+            let sJ = J - vv * dt0y;
+            if (sI < 0) sI = 0; else if (sI > sx - 1) sI = sx - 1;
+            if (sJ < 0) sJ = 0; else if (sJ > sy - 1) sJ = sy - 1;
+            const bi = sI | 0, bj = sJ | 0;
+            const fx = sI - bi, fx0 = 1 - fx, fy = sJ - bj, fy0 = 1 - fy;
+            const dI = bi < sx - 1 ? 1 : 0, dJ = bj < sy - 1 ? sx : 0, p = bj * sx + bi;
+            const adv =
+                fx0 * (fy0 * streak0[p] + fy * streak0[p + dJ]) +
+                fx * (fy0 * streak0[p + dI] + fy * streak0[p + dI + dJ]);
+            // Image-Based Flow Visualization (van Wijk 2002): blend a little
+            // fresh noise into every pixel each frame. The advection then draws
+            // that noise into long silky filaments, while the constant refresh
+            // avoids the moiré banding that pure re-advection produces in uniform
+            // flow.
+            streak[J * sx + I] = adv * (1 - INJECT) + Math.random() * INJECT;
         }
-        const u = fluid.u[idx];
-        const v = fluid.v[idx];
-        const mag = Math.sqrt(u * u + v * v);
-        const t = Math.min(1.0, mag * vScale);
-        const c = turboColor(t);
-        // Modulate brightness by the advected noise to draw the flowing fibres.
-        // Values can overshoot 255 for bright filament highlights; the
-        // Uint8ClampedArray backing the ImageData clamps them for free.
-        const shade = 0.55 + 0.75 * streak[idx];
-        setCell(data, idx, c[0] * shade, c[1] * shade, c[2] * shade);
     }
+
+    // Crisp fresh threads right at the inlet so filaments are born sharp
+    for (let J = 0; J < sy; J++) {
+        const base = J * sx;
+        for (let I = 0; I < SS * 2; I++) streak[base + I] = Math.random();
+    }
+}
+
+function renderVelocityHiRes(ref) {
+    ensureHiRes();
+    const data = hiImage.data;
+    const nx = config.nx, ny = config.ny, s = fluid.s, u = fluid.u, v = fluid.v;
+    const inv = 1 / ref;
+
+    for (let J = 0; J < sy; J++) {
+        const y = J / SS;
+        let j0 = y | 0; if (j0 > ny - 2) j0 = ny - 2;
+        const ty = y - j0, ty0 = 1 - ty, row = j0 * nx;
+        for (let I = 0; I < sx; I++) {
+            const x = I / SS;
+            let i0 = x | 0; if (i0 > nx - 2) i0 = nx - 2;
+            const tx = x - i0, tx0 = 1 - tx, a = row + i0;
+            const p4 = (J * sx + I) * 4;
+
+            // Solid body: only when the whole sampling cell is obstacle, so the
+            // white outline drawn later gets a crisp dark backing.
+            if (s[a] === 1 && s[a + 1] === 1 && s[a + nx] === 1 && s[a + nx + 1] === 1) {
+                data[p4] = OBSTACLE_RGB[0]; data[p4 + 1] = OBSTACLE_RGB[1];
+                data[p4 + 2] = OBSTACLE_RGB[2]; data[p4 + 3] = 255;
+                continue;
+            }
+            const uu = tx0 * (ty0 * u[a] + ty * u[a + nx]) + tx * (ty0 * u[a + 1] + ty * u[a + nx + 1]);
+            const vv = tx0 * (ty0 * v[a] + ty * v[a + nx]) + tx * (ty0 * v[a + 1] + ty * v[a + nx + 1]);
+            const mag = Math.sqrt(uu * uu + vv * vv);
+            let t = mag * inv; if (t > 1) t = 1;
+            const c = turboColor(t);
+            const shade = 0.45 + 0.95 * streak[J * sx + I];
+            data[p4] = c[0] * shade;
+            data[p4 + 1] = c[1] * shade;
+            data[p4 + 2] = c[2] * shade;
+            data[p4 + 3] = 255;
+        }
+    }
+    hiCtx.putImageData(hiImage, 0, 0);
 }
 
 function renderPressureField(data) {
@@ -831,45 +1027,107 @@ function renderPressureField(data) {
     }
 }
 
-function drawVelocityVectors(cs) {
-    const vScale = 15; // Scale multiplier for the vector lines
+/* ---------------------------------------------------------------------------
+ * Streamlines
+ *
+ * Lines that follow the flow, integrated through the velocity field from a rake
+ * of seed points. Unlike a grid of little arrows, they show the *story* of the
+ * flow: where it splits at the leading-edge stagnation point, how it speeds up
+ * over the top (lines crowd together), and where it separates and rolls into
+ * vortices in the wake. Each segment is coloured by local speed with the same
+ * Turbo map as the flow view, and small chevrons mark the direction.
+ * ------------------------------------------------------------------------- */
 
-    for (let j = 1; j < fluid.ny; j += 2) {
-        for (let i = 1; i < fluid.nx; i += 2) {
-            if (fluid.s[fluid.IX(i, j)] === 1) continue;
+function drawArrowHead(px, py, dx, dy, color, size) {
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;   // travel direction
+    const wx = -uy, wy = ux;              // perpendicular
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(px + ux * size, py + uy * size);
+    ctx.lineTo(px - ux * size * 0.4 + wx * size * 0.7, py - uy * size * 0.4 + wy * size * 0.7);
+    ctx.lineTo(px - ux * size * 0.4 - wx * size * 0.7, py - uy * size * 0.4 - wy * size * 0.7);
+    ctx.closePath();
+    ctx.fill();
+}
 
-            let u = fluid.u[fluid.IX(i, j)];
-            let v = fluid.v[fluid.IX(i, j)];
-            let mag = Math.sqrt(u * u + v * v);
+// Integrate and draw one streamline from (x, y) in grid coords, RK2 with a
+// fixed arc-length step so spacing stays even regardless of local speed.
+function traceStreamline(x, y, h, maxSteps, ref, cs) {
+    const nx = config.nx, ny = config.ny;
+    let stepsSinceArrow = (Math.random() * 12) | 0; // stagger arrows between lines
 
-            // Skip very small velocities to avoid clutter
-            if (mag < 0.1) continue;
+    for (let n = 0; n < maxSteps; n++) {
+        const v1 = sampleVelocity(x, y);
+        const s1 = Math.hypot(v1.u, v1.v);
+        if (s1 < 1e-4) break;                       // hit stagnation
+        const mx = x + (v1.u / s1) * h * 0.5;
+        const my = y + (v1.v / s1) * h * 0.5;
+        if (mx < 0.6 || mx > nx - 1.6 || my < 0.6 || my > ny - 1.6) break;
 
-            let cx = i * cs + cs / 2;
-            let cy = j * cs + cs / 2;
+        const v2 = sampleVelocity(mx, my);
+        const s2 = Math.hypot(v2.u, v2.v);
+        if (s2 < 1e-4) break;
+        const dx = (v2.u / s2) * h;
+        const dy = (v2.v / s2) * h;
 
-            // Color based on magnitude (fast = bright cyan, slow = dark green/blue)
-            let alpha = Math.min(1.0, mag / 2.0);
-            let hue = 180 - Math.min(60, mag * 20); // shifts from Cyan (180) to Green (120) as it speeds up
-            ctx.strokeStyle = `hsla(${hue}, 100%, 60%, ${alpha})`;
-            ctx.fillStyle = ctx.strokeStyle;
-            ctx.lineWidth = 1.5;
+        const x2 = x + dx;
+        const y2 = y + dy;
+        if (x2 < 0.6 || x2 > nx - 1.6 || y2 < 0.6 || y2 > ny - 1.6) break;
+        if (fluid.s[fluid.IX(Math.round(x2), Math.round(y2))] === 1) break;
 
-            let endX = cx + u * vScale;
-            let endY = cy + v * vScale;
+        const t = Math.min(1, s2 / ref);
+        const c = turboColor(t);
+        const col = `rgb(${c[0] | 0}, ${c[1] | 0}, ${c[2] | 0})`;
+        ctx.strokeStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(x * cs, y * cs);
+        ctx.lineTo(x2 * cs, y2 * cs);
+        ctx.stroke();
 
-            ctx.beginPath();
-            // Draw the line
-            ctx.moveTo(cx, cy);
-            ctx.lineTo(endX, endY);
-            ctx.stroke();
-
-            // Draw a small dot at the head to indicate direction
-            ctx.beginPath();
-            ctx.arc(endX, endY, 1.5, 0, Math.PI * 2);
-            ctx.fill();
+        if (++stepsSinceArrow >= 16) {
+            stepsSinceArrow = 0;
+            drawArrowHead(x2 * cs, y2 * cs, dx, dy, col, 4.5);
         }
+
+        x = x2; y = y2;
     }
+}
+
+function drawStreamlines(cs) {
+    const nx = config.nx, ny = config.ny;
+    const ref = contourReference();
+
+    // Dim Turbo heatmap backdrop: keeps the fast/slow context (red suction
+    // peak, blue wake) without competing with the lines drawn on top.
+    renderVelocityHiRes(ref);
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalAlpha = 0.30;
+    ctx.drawImage(hiCanvas, 0, 0, nx * cs, ny * cs);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(6, 8, 12, 0.32)';
+    ctx.fillRect(0, 0, nx * cs, ny * cs);
+
+    const h = 0.6;                              // step length in cells
+    const maxSteps = (nx * 2.5) | 0;
+    ctx.lineWidth = 1.35;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+    ctx.shadowBlur = 2;
+
+    // Primary rake at the inlet: shows how the whole stream parts around the body
+    const inletSeeds = Math.min(48, Math.max(20, (ny / 1.5) | 0));
+    for (let s = 0; s < inletSeeds; s++) {
+        traceStreamline(1.6, ny * (s + 0.5) / inletSeeds, h, maxSteps, ref, cs);
+    }
+    // Secondary sparse rake downstream so recirculation in the wake gets traced
+    // (upstream lines don't always penetrate a separation bubble).
+    for (let s = 0; s < 10; s++) {
+        traceStreamline(nx * 0.62, ny * (s + 0.5) / 10, h, (nx * 1.2) | 0, ref, cs);
+    }
+
+    ctx.shadowBlur = 0;
 }
 
 function drawContourLegend(maxV) {
@@ -938,24 +1196,134 @@ function drawObjectOutline(cs) {
     ctx.restore();
 }
 
+// Straight arrow with a filled head, using the streamline arrowhead helper.
+function drawArrow(x0, y0, x1, y1, color, width) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+    const dx = x1 - x0, dy = y1 - y0;
+    if (dx * dx + dy * dy > 9) drawArrowHead(x1, y1, dx, dy, color, Math.max(5, width * 2.2));
+}
+
+// Force diagram anchored on the body, echoing the reel: a yellow move-handle at
+// the pivot, an orange drag arrow (streamwise), a green lift arrow (normal), and
+// the magenta resultant. Lengths track the live force readout, so you watch the
+// resultant swing forward and collapse as the wing approaches stall.
+function drawForceVectors(cs) {
+    if (config.objectType !== 'airfoil' || airfoilBoundary.length === 0) return;
+
+    const cx = config.nx * config.objXFrac * cs;
+    const cy = config.ny * config.objYFrac * cs;
+    const k = 80;                                   // px per unit of force
+    const maxLen = config.nx * 0.22 * cs * 1.5;     // clamp to ~1.5 chords
+    const clampLen = (v) => Math.max(-maxLen, Math.min(maxLen, v));
+    const up = clampLen(forces.lift * k);           // lift → upward (−y)
+    const right = clampLen(forces.drag * k);        // drag → downstream (+x)
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+    ctx.shadowBlur = 3;
+
+    drawArrow(cx, cy, cx + right, cy, '#ff9a3c', 2.5);          // drag (orange)
+    drawArrow(cx, cy, cx, cy - up, '#39e56b', 2.5);            // lift (green)
+    drawArrow(cx, cy, cx + right, cy - up, '#ff3ea5', 3);      // resultant (magenta)
+
+    ctx.shadowBlur = 0;
+    const hs = 6;                                              // yellow handle
+    ctx.strokeStyle = '#ffd23c';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(cx - hs, cy - hs, hs * 2, hs * 2);
+    ctx.beginPath();
+    ctx.moveTo(cx - hs, cy); ctx.lineTo(cx + hs, cy);
+    ctx.moveTo(cx, cy - hs); ctx.lineTo(cx, cy + hs);
+    ctx.stroke();
+    ctx.restore();
+}
+
+// Representative lift-coefficient model: linear thin-airfoil slope tapered by
+// the same separation model the solver uses, so the mini plot shows the stall.
+function clModel(aoaDeg) {
+    const linear = 0.10 * aoaDeg;
+    return linear * (1 - 0.72 * separationFraction(aoaDeg));
+}
+
+function drawMiniLiftCurve() {
+    const w = ui.miniLift.width, h = ui.miniLift.height;
+    miniCtx.clearRect(0, 0, w, h);
+
+    if (config.objectType !== 'airfoil') {
+        miniCtx.fillStyle = 'rgba(200,208,220,0.6)';
+        miniCtx.font = '10px JetBrains Mono, monospace';
+        miniCtx.textAlign = 'center';
+        miniCtx.fillText('airfoil only', w / 2, h / 2);
+        return;
+    }
+
+    const x0 = 6, x1 = w - 6, y0 = 8, y1 = h - 13;
+    const aoaMin = -20, aoaMax = 20, clMax = 1.6;
+    const X = a => x0 + (a - aoaMin) / (aoaMax - aoaMin) * (x1 - x0);
+    const Y = cl => (y0 + y1) / 2 - cl / clMax * ((y1 - y0) / 2);
+
+    // Zero axes
+    miniCtx.strokeStyle = 'rgba(130,140,155,0.35)';
+    miniCtx.lineWidth = 1;
+    miniCtx.beginPath();
+    miniCtx.moveTo(x0, Y(0)); miniCtx.lineTo(x1, Y(0));
+    miniCtx.moveTo(X(0), y0); miniCtx.lineTo(X(0), y1);
+    miniCtx.stroke();
+
+    // Cl curve
+    miniCtx.strokeStyle = '#39e56b';
+    miniCtx.lineWidth = 1.8;
+    miniCtx.beginPath();
+    for (let a = aoaMin; a <= aoaMax; a += 0.5) {
+        const px = X(a), py = Y(clModel(a));
+        if (a === aoaMin) miniCtx.moveTo(px, py); else miniCtx.lineTo(px, py);
+    }
+    miniCtx.stroke();
+
+    // Live operating point
+    const cx = X(config.aoa), cy = Y(clModel(config.aoa));
+    miniCtx.fillStyle = '#fff';
+    miniCtx.beginPath(); miniCtx.arc(cx, cy, 3, 0, Math.PI * 2); miniCtx.fill();
+    miniCtx.strokeStyle = '#ff3ea5';
+    miniCtx.lineWidth = 1.4;
+    miniCtx.beginPath(); miniCtx.arc(cx, cy, 5.5, 0, Math.PI * 2); miniCtx.stroke();
+
+    // Axis labels
+    miniCtx.fillStyle = 'rgba(200,208,220,0.7)';
+    miniCtx.font = '9px JetBrains Mono, monospace';
+    miniCtx.textBaseline = 'alphabetic';
+    miniCtx.textAlign = 'left'; miniCtx.fillText('-20°', x0, h - 3);
+    miniCtx.textAlign = 'right'; miniCtx.fillText('+20°', x1, h - 3);
+    miniCtx.textAlign = 'center'; miniCtx.fillText(`α ${config.aoa}°`, X(0), h - 3);
+}
+
 function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const cs = config.cellSize;
 
     if (config.vizMode === 'velocity') {
-        drawVelocityVectors(cs);
+        drawStreamlines(cs);
     } else if (config.vizMode === 'particles') {
         drawParticles(cs);
+    } else if (config.vizMode === 'velocity-contour') {
+        // Silky high-resolution flow view (the reel look)
+        const ref = contourReference();
+        renderVelocityHiRes(ref);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(hiCanvas, 0, 0, config.nx * cs, config.ny * cs);
+        drawContourLegend(ref);
     } else {
         ensureFieldBuffer();
         const data = fieldImage.data;
-        let maxV = 0;
 
         if (config.vizMode === 'dye') {
             renderDyeField(data);
-        } else if (config.vizMode === 'velocity-contour') {
-            maxV = contourReference();
-            renderContourField(data, maxV);
         } else if (config.vizMode === 'pressure') {
             renderPressureField(data);
         }
@@ -963,13 +1331,11 @@ function draw() {
         fieldCtx.putImageData(fieldImage, 0, 0);
         ctx.imageSmoothingEnabled = true;
         ctx.drawImage(fieldCanvas, 0, 0, config.nx * cs, config.ny * cs);
-
-        if (config.vizMode === 'velocity-contour') {
-            drawContourLegend(maxV);
-        }
     }
 
     drawObjectOutline(cs);
+    drawForceVectors(cs);
+    drawMiniLiftCurve();
 }
 
 /* ---------------------------------------------------------------------------

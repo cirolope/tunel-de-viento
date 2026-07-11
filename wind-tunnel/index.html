@@ -24,6 +24,18 @@
         <main class="main-content">
             <div class="canvas-wrapper">
                 <canvas id="sim-canvas"></canvas>
+
+                <!-- Reel-style title bar -->
+                <div class="tunnel-titlebar">airfoil — 2D wind tunnel</div>
+
+                <!-- Top-left toolbar chips -->
+                <div class="tunnel-toolbar">
+                    <button class="chip chip-btn" id="hud-pause">⏸ pause</button>
+                    <span class="chip chip-key">NACA</span>
+                    <span class="chip chip-val" id="hud-naca">2412</span>
+                    <span class="chip chip-val" id="hud-aoa">α 0°</span>
+                </div>
+
                 <div class="canvas-overlay">
                     <div class="data-readout">
                         <div><span class="label">Lift (approx)</span><span class="value" id="val-lift">0.00</span></div>
@@ -31,6 +43,22 @@
                         <div title="Re = U·c/ν — reference chord c = 1 m"><span class="label">Reynolds</span><span
                                 class="value" id="val-re">0</span></div>
                     </div>
+                </div>
+
+                <!-- Terminal-style keyboard HUD (bottom-left) -->
+                <div class="tunnel-hud" aria-hidden="true">
+                    <div><b>N</b><span>step (paused)</span></div>
+                    <div><b>R</b><span>reset the flow</span></div>
+                    <div><b>Space</b><span>play / pause</span></div>
+                    <div><b>1–5</b><span>visualization</span></div>
+                    <div><b>↑ ↓</b><span>angle of attack</span></div>
+                    <div><b>S</b><span>sweep → lift curve</span></div>
+                </div>
+
+                <!-- Live Cl vs AoA mini-plot (bottom-right) -->
+                <div class="mini-curve">
+                    <div class="mini-curve-title">LIFT CURVE · Cl vs AoA</div>
+                    <canvas id="mini-lift" width="300" height="120"></canvas>
                 </div>
 
                 <div class="chart-overlay hidden" id="chart-overlay" role="dialog" aria-label="Lift and drag versus angle of attack">
@@ -126,7 +154,7 @@
                         </label>
                         <label class="radio-label">
                             <input type="radio" name="viz-mode" value="velocity">
-                            <span class="radio-custom">Velocity Field</span>
+                            <span class="radio-custom">Streamlines</span>
                         </label>
                         <label class="radio-label">
                             <input type="radio" name="viz-mode" value="pressure">
